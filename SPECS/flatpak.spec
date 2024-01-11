@@ -2,7 +2,7 @@
 %global ostree_version 2020.8
 
 Name:           flatpak
-Version:        1.10.7
+Version:        1.10.8
 Release:        1%{?dist}
 Summary:        Application deployment framework for desktop apps
 
@@ -16,6 +16,7 @@ BuildRequires:  pkgconfig(fuse)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(gio-unix-2.0)
 BuildRequires:  pkgconfig(gobject-introspection-1.0) >= 1.40.0
+BuildRequires:  pkgconfig(gpgme)
 BuildRequires:  pkgconfig(json-glib-1.0)
 BuildRequires:  pkgconfig(libarchive) >= 2.8.0
 BuildRequires:  pkgconfig(libseccomp)
@@ -31,9 +32,9 @@ BuildRequires:  bubblewrap >= %{bubblewrap_version}
 BuildRequires:  docbook-dtds
 BuildRequires:  docbook-style-xsl
 BuildRequires:  gettext
-BuildRequires:  gpgme-devel
+BuildRequires:  libassuan-devel
 BuildRequires:  libcap-devel
-BuildRequires:  python3-pyparsing
+BuildRequires:  python3.11-pyparsing
 BuildRequires:  systemd
 BuildRequires:  /usr/bin/python3
 BuildRequires:  /usr/bin/xmlto
@@ -245,6 +246,10 @@ fi
 
 
 %changelog
+* Tue Jul 11 2023 Debarshi Ray <rishi@fedoraproject.org> - 1.10.8-1
+- Rebase to 1.10.8 (#2222103)
+- Fix CVE-2023-28100 and CVE-2023-28101 (#2180311)
+
 * Wed Mar 09 2022 Debarshi Ray <rishi@fedoraproject.org> - 1.10.7-1
 - Rebase to 1.10.7 (#2062417)
 
