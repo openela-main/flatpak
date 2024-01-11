@@ -2,8 +2,8 @@
 %global ostree_version 2020.8
 
 Name:           flatpak
-Version:        1.12.7
-Release:        2%{?dist}
+Version:        1.12.8
+Release:        1%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -24,6 +24,7 @@ BuildRequires:  pkgconfig(fuse)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(gio-unix-2.0)
 BuildRequires:  pkgconfig(gobject-introspection-1.0) >= 1.40.0
+BuildRequires:  pkgconfig(gpgme)
 BuildRequires:  pkgconfig(json-glib-1.0)
 BuildRequires:  pkgconfig(libarchive) >= 2.8.0
 BuildRequires:  pkgconfig(libseccomp)
@@ -39,7 +40,6 @@ BuildRequires:  bubblewrap >= %{bubblewrap_version}
 BuildRequires:  docbook-dtds
 BuildRequires:  docbook-style-xsl
 BuildRequires:  gettext
-BuildRequires:  gpgme-devel
 BuildRequires:  libcap-devel
 BuildRequires:  python3-pyparsing
 BuildRequires:  systemd
@@ -276,6 +276,10 @@ fi
 
 
 %changelog
+* Tue Jul 11 2023 Debarshi Ray <rishi@fedoraproject.org> - 1.12.8-1
+- Update to 1.12.8 (CVE-2023-28100, CVE-2023-28101)
+Resolves: #2180312, #2221792
+
 * Mon Jun 27 2022 Debarshi Ray <rishi@fedoraproject.org> - 1.12.7-2
 - Let flatpak own %%{_sysconfdir}/flatpak
 Resolves: #2101456
