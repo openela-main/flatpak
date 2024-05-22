@@ -3,7 +3,7 @@
 
 Name:           flatpak
 Version:        1.10.8
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -34,9 +34,9 @@ BuildRequires:  docbook-style-xsl
 BuildRequires:  gettext
 BuildRequires:  libassuan-devel
 BuildRequires:  libcap-devel
-BuildRequires:  python3.11-pyparsing
+BuildRequires:  python3-devel
+BuildRequires:  python3-pyparsing
 BuildRequires:  systemd
-BuildRequires:  /usr/bin/python3
 BuildRequires:  /usr/bin/xmlto
 BuildRequires:  /usr/bin/xsltproc
 
@@ -119,6 +119,8 @@ This package contains installed tests for %{name}.
 
 %prep
 %autosetup -p1
+# Make sure to use the RHEL-lifetime supported Python and no other
+%py3_shebang_fix scripts/*  variant-schema-compiler/*
 
 
 %build
@@ -246,6 +248,9 @@ fi
 
 
 %changelog
+* Mon Sep 04 2023 Miro Hrončok <mhroncok@redhat.com> - 1.10.8-2
+- Make sure to use the RHEL-lifetime supported Python and no other (RHEL-2225)
+
 * Tue Jul 11 2023 Debarshi Ray <rishi@fedoraproject.org> - 1.10.8-1
 - Rebase to 1.10.8 (#2222103)
 - Fix CVE-2023-28100 and CVE-2023-28101 (#2180311)
