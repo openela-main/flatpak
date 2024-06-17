@@ -1,0 +1,28 @@
+From 1c73110795b865246ce3595042dcd2d5e7891359 Mon Sep 17 00:00:00 2001
+From: Debarshi Ray <debarshir@gnome.org>
+Date: Mon, 6 Nov 2023 20:27:16 +0100
+Subject: [PATCH] Revert "selinux: Permit using systemd-userdbd"
+
+This reverts commit 399710ada185c1ee232bc3e6266a71688eb152b7.
+---
+ selinux/flatpak.te | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/selinux/flatpak.te b/selinux/flatpak.te
+index bb3d80e316eb..4cf895c44abe 100644
+--- a/selinux/flatpak.te
++++ b/selinux/flatpak.te
+@@ -33,10 +33,6 @@ optional_policy(`
+    policykit_dbus_chat(flatpak_helper_t)
+ ')
+ 
+-optional_policy(`
+-   systemd_userdbd_stream_connect(flatpak_helper_t)
+-')
+-
+ optional_policy(`                   
+     unconfined_domain(flatpak_helper_t)
+ ')
+-- 
+2.41.0
+

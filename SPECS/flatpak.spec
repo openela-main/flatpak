@@ -2,13 +2,21 @@
 %global ostree_version 2020.8
 
 Name:           flatpak
-Version:        1.10.8
-Release:        2%{?dist}
+Version:        1.12.9
+Release:        1%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
 URL:            http://flatpak.org/
 Source0:        https://github.com/flatpak/flatpak/releases/download/%{version}/%{name}-%{version}.tar.xz
+
+%if 0%{?fedora}
+# Add Fedora flatpak repositories
+Source1:        flatpak-add-fedora-repos.service
+%endif
+
+# https://issues.redhat.com/browse/RHEL-4220
+Patch0:         flatpak-Revert-selinux-Permit-using-systemd-userdbd.patch
 
 BuildRequires:  pkgconfig(appstream-glib)
 BuildRequires:  pkgconfig(dconf)
@@ -39,8 +47,6 @@ BuildRequires:  python3-pyparsing
 BuildRequires:  systemd
 BuildRequires:  /usr/bin/xmlto
 BuildRequires:  /usr/bin/xsltproc
-
-%{?systemd_requires}
 
 Requires:       bubblewrap >= %{bubblewrap_version}
 Requires:       librsvg2%{?_isa}
@@ -120,7 +126,7 @@ This package contains installed tests for %{name}.
 %prep
 %autosetup -p1
 # Make sure to use the RHEL-lifetime supported Python and no other
-%py3_shebang_fix scripts/*  variant-schema-compiler/*
+%py3_shebang_fix scripts/* subprojects/variant-schema-compiler/* tests/*
 
 
 %build
@@ -144,6 +150,11 @@ install -pm 644 NEWS README.md %{buildroot}/%{_pkgdocdir}
 install -d %{buildroot}%{_localstatedir}/lib/flatpak
 install -d %{buildroot}%{_sysconfdir}/flatpak/remotes.d
 rm -f %{buildroot}%{_libdir}/libflatpak.la
+
+%if 0%{?fedora}
+install -D -t %{buildroot}%{_unitdir} %{SOURCE1}
+%endif
+
 %find_lang %{name}
 
 # Work around selinux denials, see
@@ -160,13 +171,26 @@ getent passwd flatpak >/dev/null || \
 exit 0
 
 
+%if 0%{?fedora}
 %post
-# Create an (empty) system-wide repo.
-flatpak remote-list --system &> /dev/null || :
+%systemd_post flatpak-add-fedora-repos.service
+%endif
 
 
 %post selinux
 %selinux_modules_install %{_datadir}/selinux/packages/flatpak.pp.bz2
+
+
+%if 0%{?fedora}
+%preun
+%systemd_preun flatpak-add-fedora-repos.service
+%endif
+
+
+%if 0%{?fedora}
+%postun
+%systemd_postun_with_restart flatpak-add-fedora-repos.service
+%endif
 
 
 %postun selinux
@@ -211,6 +235,7 @@ fi
 %{_mandir}/man5/flatpak-installation.5*
 %{_mandir}/man5/flatpak-remote.5*
 %{_sysconfdir}/dbus-1/system.d/org.freedesktop.Flatpak.SystemHelper.conf
+%dir %{_sysconfdir}/flatpak
 %{_sysconfdir}/flatpak/remotes.d
 %{_sysconfdir}/profile.d/flatpak.sh
 %{_sysusersdir}/flatpak.conf
@@ -218,6 +243,10 @@ fi
 %{_userunitdir}/flatpak-oci-authenticator.service
 %{_userunitdir}/flatpak-portal.service
 %{_systemd_user_env_generator_dir}/60-flatpak
+
+%if 0%{?fedora}
+%{_unitdir}/flatpak-add-fedora-repos.service
+%endif
 
 %files devel
 %{_datadir}/gir-1.0/Flatpak-1.0.gir
@@ -248,6 +277,15 @@ fi
 
 
 %changelog
+* Tue Apr 30 2024 Kalev Lember <klember@redhat.com> - 1.12.9-1
+- Update to 1.12.9 (CVE-2024-32462)
+
+* Mon Nov 06 2023 Debarshi Ray <rishi@fedoraproject.org> - 1.12.8-1
+- Rebase to 1.12.8 (RHEL-4220)
+
+* Mon Nov 06 2023 Debarshi Ray <rishi@fedoraproject.org> - 1.10.8-3
+- Let flatpak own %%{_sysconfdir}/flatpak (RHEL-15822)
+
 * Mon Sep 04 2023 Miro Hrončok <mhroncok@redhat.com> - 1.10.8-2
 - Make sure to use the RHEL-lifetime supported Python and no other (RHEL-2225)
 
