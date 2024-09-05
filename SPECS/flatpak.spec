@@ -1,9 +1,9 @@
-%global bubblewrap_version 0.4.0
+%global bubblewrap_version 0.4.0-2
 %global ostree_version 2020.8
 
 Name:           flatpak
 Version:        1.12.9
-Release:        1%{?dist}
+Release:        3%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -17,6 +17,9 @@ Source1:        flatpak-add-fedora-repos.service
 
 # https://issues.redhat.com/browse/RHEL-4220
 Patch0:         flatpak-Revert-selinux-Permit-using-systemd-userdbd.patch
+
+# Backported upstream patch for CVE-2024-42472
+Patch1:         flatpak-1.12.x-CVE-2024-42472.patch
 
 BuildRequires:  pkgconfig(appstream-glib)
 BuildRequires:  pkgconfig(dconf)
@@ -277,6 +280,14 @@ fi
 
 
 %changelog
+* Wed Sep 04 2024 Kalev Lember <klember@redhat.com> - 1.12.9-3
+- Fix previous changelog entry
+
+* Mon Sep 02 2024 Kalev Lember <klember@redhat.com> - 1.12.9-2
+- Backport upstream patches for CVE-2024-42472
+- Require bubblewrap version that has new --bind-fd option backported for
+  addressing CVE-2024-42472
+
 * Tue Apr 30 2024 Kalev Lember <klember@redhat.com> - 1.12.9-1
 - Update to 1.12.9 (CVE-2024-32462)
 
