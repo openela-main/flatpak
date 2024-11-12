@@ -1,4 +1,4 @@
-%global bubblewrap_version 0.4.1-7
+%global bubblewrap_version 0.4.1-8
 %global ostree_version 2020.8
 
 Name:           flatpak
