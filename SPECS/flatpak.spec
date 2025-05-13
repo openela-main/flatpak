@@ -3,7 +3,7 @@
 
 Name:           flatpak
 Version:        1.12.9
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -14,6 +14,11 @@ Source0:        https://github.com/flatpak/flatpak/releases/download/%{version}/
 # Add Fedora flatpak repositories
 Source1:        flatpak-add-fedora-repos.service
 %endif
+
+# systemd-sysusers config. Only used for the %%pre macro. Must be kept in sync
+# with the config from upstream sources.
+Source2:        flatpak.sysusers.conf
+
 
 # https://bugzilla.redhat.com/show_bug.cgi?id=1935508
 Patch0:         flatpak-dir-Use-SHA256-not-SHA1-to-name-the-cache-for-a-filt.patch
@@ -45,9 +50,12 @@ BuildRequires:  gettext
 BuildRequires:  libcap-devel
 BuildRequires:  python3-pyparsing
 BuildRequires:  systemd
+BuildRequires:  systemd-rpm-macros
 BuildRequires:  /usr/bin/xdg-dbus-proxy
 BuildRequires:  /usr/bin/xmlto
 BuildRequires:  /usr/bin/xsltproc
+
+%{?sysusers_requires_compat}
 
 Requires:       bubblewrap >= %{bubblewrap_version}
 Requires:       librsvg2%{?_isa}
@@ -84,7 +92,6 @@ Summary:        Libraries for %{name}
 License:        LGPLv2+
 Requires:       bubblewrap >= %{bubblewrap_version}
 Requires:       ostree%{?_isa} >= %{ostree_version}
-Requires(pre):  /usr/sbin/useradd
 
 %description libs
 This package contains libflatpak.
@@ -155,6 +162,7 @@ install -pm 644 NEWS README.md %{buildroot}/%{_pkgdocdir}
 install -d %{buildroot}%{_localstatedir}/lib/flatpak
 install -d %{buildroot}%{_sysconfdir}/flatpak/remotes.d
 rm -f %{buildroot}%{_libdir}/libflatpak.la
+install -p -m644 -D %{SOURCE2} %{buildroot}%{_sysusersdir}/%{name}.conf
 
 %if 0%{?fedora}
 install -D -t %{buildroot}%{_unitdir} %{SOURCE1}
@@ -169,11 +177,7 @@ install -D -t %{buildroot}%{_unitdir} %{SOURCE1}
 rm %{buildroot}%{_systemd_system_env_generator_dir}/60-flatpak-system-only
 
 %pre
-getent group flatpak >/dev/null || groupadd -r flatpak
-getent passwd flatpak >/dev/null || \
-    useradd -r -g flatpak -d / -s /sbin/nologin \
-     -c "User for flatpak system helper" flatpak
-exit 0
+%sysusers_create_compat %{SOURCE2}
 
 
 %if 0%{?fedora}
@@ -239,7 +243,7 @@ fi
 %dir %{_sysconfdir}/flatpak
 %{_sysconfdir}/flatpak/remotes.d
 %{_sysconfdir}/profile.d/flatpak.sh
-%{_sysusersdir}/flatpak.conf
+%{_sysusersdir}/%{name}.conf
 %{_unitdir}/flatpak-system-helper.service
 %{_userunitdir}/flatpak-oci-authenticator.service
 %{_userunitdir}/flatpak-portal.service
@@ -278,6 +282,10 @@ fi
 
 
 %changelog
+* Fri Mar 07 202 Tomas Pelka <tpelka@redhat.com> - 1.12.9-4
+- Use sysusers_create_compat macro to create user & group
+Resolves: RHEL-78737
+
 * Wed Sep 04 2024 Kalev Lember <klember@redhat.com> - 1.12.9-3
 - Fix previous changelog entry
 
