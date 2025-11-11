@@ -12,7 +12,7 @@
 
 Name:           flatpak
 Version:        1.16.0
-Release:        5%{?dist}
+Release:        6%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -38,12 +38,11 @@ Patch1:         flatpak-allow-direct-installation-from-oci-images.patch
 # https://github.com/owtaylor/flatpak/commits/oci-sideload
 Patch2:         flatpak-support-sideload-repositories-for-oci-remotes.patch
 # Add support for preinstalling flatpaks
-# https://github.com/flatpak/flatpak/pull/5832
+# https://github.com/flatpak/flatpak/pull/6116
 Patch3:         flatpak-add-support-for-preinstalling-flatpaks.patch
 # Enable collection IDs for OCI remotes
 # https://github.com/flatpak/flatpak/pull/6083
 Patch4:         flatpak-enable-collection-ids-for-oci-remotes.patch
-
 # Fix crash and installatcion of OCI images
 Patch5:         flatpak-pass-token-to-flatpak-image-source-new-remote.patch
 
@@ -315,6 +314,10 @@ fi
 
 
 %changelog
+* Mon Aug 04 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-6
+- Fix wrongly marked failed installs as pre-installed
+  Resolves: RHEL-89989
+
 * Wed Feb 05 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-5
 - Fix crash and installatcion of OCI images
   Resolves: RHEL-76958

@@ -1,7 +1,7 @@
-From 4d171a522dfef4039adea792f8ff856036f14686 Mon Sep 17 00:00:00 2001
+From 73393a90f18cf143d17bc671750d64d474a11f9d Mon Sep 17 00:00:00 2001
 From: Kalev Lember <klember@redhat.com>
 Date: Tue, 16 Apr 2024 12:18:59 +0200
-Subject: Add initial support for preinstalling flatpaks
+Subject: [PATCH] Add initial support for preinstalling flatpaks
 
 This adds new FlatpakTransaction API, and a new top level CLI command to
 preinstall flatpaks, that is to install flatpaks that are considered
@@ -29,9 +29,9 @@ Co-authored-by: Sebastian Wick <sebastian.wick@redhat.com>
  app/flatpak-main.c                    |   1 +
  app/meson.build                       |   1 +
  common/flatpak-dir-private.h          |  23 +-
- common/flatpak-dir.c                  | 406 +++++++++++++++++++++++++-
+ common/flatpak-dir.c                  | 430 +++++++++++++++++++++++++-
  common/flatpak-installation.c         |   2 +-
- common/flatpak-transaction.c          | 187 ++++++++++--
+ common/flatpak-transaction.c          | 187 +++++++++--
  common/flatpak-transaction.h          |   3 +
  doc/flatpak-docs.xml.in               |   1 +
  doc/flatpak-preinstall.xml            | 276 +++++++++++++++++
@@ -41,15 +41,15 @@ Co-authored-by: Sebastian Wick <sebastian.wick@redhat.com>
  tests/libtest.sh                      |   1 +
  tests/test-basic.sh                   |   2 +-
  tests/test-matrix/meson.build         |   1 +
- tests/test-preinstall.sh              | 226 ++++++++++++++
- 18 files changed, 1264 insertions(+), 30 deletions(-)
+ tests/test-preinstall.sh              | 249 +++++++++++++++
+ 18 files changed, 1311 insertions(+), 30 deletions(-)
  create mode 100644 app/flatpak-builtins-preinstall.c
  create mode 100644 doc/flatpak-preinstall.xml
  create mode 100755 tests/test-preinstall.sh
 
 diff --git a/app/flatpak-builtins-preinstall.c b/app/flatpak-builtins-preinstall.c
 new file mode 100644
-index 00000000..3d52cb8b
+index 0000000000..3d52cb8bc2
 --- /dev/null
 +++ b/app/flatpak-builtins-preinstall.c
 @@ -0,0 +1,156 @@
@@ -210,7 +210,7 @@ index 00000000..3d52cb8b
 +  return TRUE;
 +}
 diff --git a/app/flatpak-builtins.h b/app/flatpak-builtins.h
-index 32a9c952..20eb2272 100644
+index 32a9c9528c..20eb227206 100644
 --- a/app/flatpak-builtins.h
 +++ b/app/flatpak-builtins.h
 @@ -127,6 +127,7 @@ BUILTINPROTO (repair)
@@ -222,7 +222,7 @@ index 32a9c952..20eb2272 100644
  #undef BUILTINPROTO
  
 diff --git a/app/flatpak-main.c b/app/flatpak-main.c
-index 45498895..d5794d99 100644
+index 4549889566..d5794d9909 100644
 --- a/app/flatpak-main.c
 +++ b/app/flatpak-main.c
 @@ -89,6 +89,7 @@ static FlatpakCommand commands[] = {
@@ -234,7 +234,7 @@ index 45498895..d5794d99 100644
    /* translators: please keep the leading newline and space */
    { N_("\n Find applications and runtimes") },
 diff --git a/app/meson.build b/app/meson.build
-index 258d582a..8e6ef1dd 100644
+index 258d582a93..8e6ef1dd1b 100644
 --- a/app/meson.build
 +++ b/app/meson.build
 @@ -100,6 +100,7 @@ sources = [
@@ -246,7 +246,7 @@ index 258d582a..8e6ef1dd 100644
    'flatpak-builtins-remote-add.c',
    'flatpak-builtins-remote-delete.c',
 diff --git a/common/flatpak-dir-private.h b/common/flatpak-dir-private.h
-index ffcff5ff..2c75890c 100644
+index ffcff5ff50..2c75890c2e 100644
 --- a/common/flatpak-dir-private.h
 +++ b/common/flatpak-dir-private.h
 @@ -187,6 +187,7 @@ typedef enum {
@@ -318,7 +318,7 @@ index ffcff5ff..2c75890c 100644
                                                                               FlatpakDecomposed             *ref,
                                                                               const char                    *opt_commit,
 diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
-index 1c304525..6300f3cc 100644
+index 1c30452576..e2a6202db1 100644
 --- a/common/flatpak-dir.c
 +++ b/common/flatpak-dir.c
 @@ -86,6 +86,16 @@
@@ -338,7 +338,7 @@ index 1c304525..6300f3cc 100644
  #define SIDELOAD_REPOS_DIR_NAME "sideload-repos"
  
  #define FLATPAK_TRIGGERS_DIR "triggers"
-@@ -2043,6 +2053,381 @@ get_system_locations (GCancellable *cancellable,
+@@ -2043,6 +2053,405 @@ get_system_locations (GCancellable *cancellable,
    return g_steal_pointer (&locations);
  }
  
@@ -672,11 +672,27 @@ index 1c304525..6300f3cc 100644
 +  return g_steal_pointer (&preinstalls);
 +}
 +
++static gboolean
++flatpak_is_ref_in_list (FlatpakDecomposed *needle,
++                        GPtrArray         *refs)
++{
++  for (size_t i = 0; i < refs->len; i++)
++    {
++      FlatpakDecomposed *ref = g_ptr_array_index (refs, i);
++
++      if (flatpak_decomposed_equal (ref, needle))
++        return TRUE;
++    }
++
++  return FALSE;
++}
++
 +gboolean
 +flatpak_dir_uninitialized_mark_preinstalled (FlatpakDir       *self,
 +                                             const GPtrArray  *preinstall_config,
 +                                             GError          **error)
 +{
++  g_autoptr(GPtrArray) installed_refs = NULL;
 +  const char *existing_preinstalls;
 +  g_autoptr(GError) local_error = NULL;
 +
@@ -695,10 +711,18 @@ index 1c304525..6300f3cc 100644
 +
 +  g_clear_error (&local_error);
 +
++  installed_refs = flatpak_dir_list_refs (self, FLATPAK_KINDS_RUNTIME | FLATPAK_KINDS_APP,
++                                          NULL, error);
++  if (installed_refs == NULL)
++    return FALSE;
++
 +  for (int i = 0; i < preinstall_config->len; i++)
 +    {
 +      const FlatpakPreinstallConfig *config = g_ptr_array_index (preinstall_config, i);
 +      GError **append_error = local_error == NULL ? &local_error : NULL;
++
++      if (!flatpak_is_ref_in_list (config->ref, installed_refs))
++        continue;
 +
 +      flatpak_dir_config_append_pattern (self,
 +                                         "preinstalled",
@@ -720,7 +744,7 @@ index 1c304525..6300f3cc 100644
  GPtrArray *
  flatpak_get_system_base_dir_locations (GCancellable *cancellable,
                                         GError      **error)
-@@ -9255,6 +9640,7 @@ flatpak_dir_deploy_install (FlatpakDir        *self,
+@@ -9255,6 +9664,7 @@ flatpak_dir_deploy_install (FlatpakDir        *self,
                              const char       **previous_ids,
                              gboolean           reinstall,
                              gboolean           pin_on_deploy,
@@ -728,7 +752,7 @@ index 1c304525..6300f3cc 100644
                              GCancellable      *cancellable,
                              GError           **error)
  {
-@@ -9360,6 +9746,14 @@ flatpak_dir_deploy_install (FlatpakDir        *self,
+@@ -9360,6 +9770,14 @@ flatpak_dir_deploy_install (FlatpakDir        *self,
                                            TRUE, NULL, error))
      goto out;
  
@@ -743,7 +767,7 @@ index 1c304525..6300f3cc 100644
    ret = TRUE;
  
    commit = flatpak_dir_read_active (self, ref, cancellable);
-@@ -9960,6 +10354,7 @@ flatpak_dir_install (FlatpakDir          *self,
+@@ -9960,6 +10378,7 @@ flatpak_dir_install (FlatpakDir          *self,
                       gboolean             reinstall,
                       gboolean             app_hint,
                       gboolean             pin_on_deploy,
@@ -751,7 +775,7 @@ index 1c304525..6300f3cc 100644
                       FlatpakRemoteState  *state,
                       FlatpakDecomposed   *ref,
                       const char          *opt_commit,
-@@ -10174,6 +10569,9 @@ flatpak_dir_install (FlatpakDir          *self,
+@@ -10174,6 +10593,9 @@ flatpak_dir_install (FlatpakDir          *self,
        if (pin_on_deploy)
          helper_flags |= FLATPAK_HELPER_DEPLOY_FLAGS_UPDATE_PINNED;
  
@@ -761,7 +785,7 @@ index 1c304525..6300f3cc 100644
        helper_flags |= FLATPAK_HELPER_DEPLOY_FLAGS_INSTALL_HINT;
  
        if (!flatpak_dir_system_helper_call_deploy (self,
-@@ -10212,6 +10610,7 @@ flatpak_dir_install (FlatpakDir          *self,
+@@ -10212,6 +10634,7 @@ flatpak_dir_install (FlatpakDir          *self,
      {
        if (!flatpak_dir_deploy_install (self, ref, state->remote_name, opt_subpaths,
                                         opt_previous_ids, reinstall, pin_on_deploy,
@@ -769,7 +793,7 @@ index 1c304525..6300f3cc 100644
                                         cancellable, error))
          return FALSE;
  
-@@ -10502,7 +10901,7 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
+@@ -10502,7 +10925,7 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
      }
    else
      {
@@ -778,7 +802,7 @@ index 1c304525..6300f3cc 100644
          return FALSE;
      }
  
-@@ -10933,6 +11332,7 @@ flatpak_dir_uninstall (FlatpakDir                 *self,
+@@ -10933,6 +11356,7 @@ flatpak_dir_uninstall (FlatpakDir                 *self,
    g_autoptr(GBytes) deploy_data = NULL;
    gboolean keep_ref = flags & FLATPAK_HELPER_UNINSTALL_FLAGS_KEEP_REF;
    gboolean force_remove = flags & FLATPAK_HELPER_UNINSTALL_FLAGS_FORCE_REMOVE;
@@ -786,7 +810,7 @@ index 1c304525..6300f3cc 100644
  
    name = flatpak_decomposed_dup_id (ref);
  
-@@ -11039,6 +11439,10 @@ flatpak_dir_uninstall (FlatpakDir                 *self,
+@@ -11039,6 +11463,10 @@ flatpak_dir_uninstall (FlatpakDir                 *self,
    if (!flatpak_dir_mark_changed (self, error))
      return FALSE;
  
@@ -798,7 +822,7 @@ index 1c304525..6300f3cc 100644
      {
        const char *branch = flatpak_decomposed_get_branch (ref);
 diff --git a/common/flatpak-installation.c b/common/flatpak-installation.c
-index 3a8677e8..be706174 100644
+index 3a8677e836..be7061748b 100644
 --- a/common/flatpak-installation.c
 +++ b/common/flatpak-installation.c
 @@ -1929,7 +1929,7 @@ flatpak_installation_install_full (FlatpakInstallation    *self,
@@ -811,7 +835,7 @@ index 3a8677e8..be706174 100644
                              progress, cancellable, error))
      return NULL;
 diff --git a/common/flatpak-transaction.c b/common/flatpak-transaction.c
-index b498e4d4..22b7ad8c 100644
+index b498e4d432..01d3732f26 100644
 --- a/common/flatpak-transaction.c
 +++ b/common/flatpak-transaction.c
 @@ -116,6 +116,7 @@ struct _FlatpakTransactionOperation
@@ -993,18 +1017,18 @@ index b498e4d4..22b7ad8c 100644
 +  if (remotes == NULL)
 +    return FALSE;
 +
-+  preinstalled_refs = flatpak_dir_get_config_patterns (priv->dir, "preinstalled");
-+
 +  configs = flatpak_get_preinstall_config (priv->default_arch, NULL, error);
 +  if (configs == NULL)
 +    return FALSE;
 +
 +  /* If the system has not had any apps pre-installed (i.e. the key in the
-+   * config is missing) we mark all apps we would pre-install as pre-installed.
-+   * This makes sure we will uninstall them when the config says that they no
-+   * longer should be installed. */
++   * config is missing) we mark all installed apps we would pre-install as
++   * pre-installed. This makes sure we will uninstall them when the config says
++   * that they no longer should be installed. */
 +  if (!flatpak_dir_uninitialized_mark_preinstalled (priv->dir, configs, NULL))
 +    g_message (_("Warning: Could not mark already installed apps as preinstalled"));
++
++  preinstalled_refs = flatpak_dir_get_config_patterns (priv->dir, "preinstalled");
 +
 +  /* Find preinstalls that should get installed */
 +  for (int i = 0; i < configs->len; i++)
@@ -1182,7 +1206,7 @@ index b498e4d4..22b7ad8c 100644
          }
      }
 diff --git a/common/flatpak-transaction.h b/common/flatpak-transaction.h
-index dfa3d039..ae305c34 100644
+index dfa3d0392f..ae305c3411 100644
 --- a/common/flatpak-transaction.h
 +++ b/common/flatpak-transaction.h
 @@ -339,6 +339,9 @@ gboolean            flatpak_transaction_add_install_flatpakref (FlatpakTransacti
@@ -1196,7 +1220,7 @@ index dfa3d039..ae305c34 100644
                                                      const char         *ref,
                                                      const char        **subpaths,
 diff --git a/doc/flatpak-docs.xml.in b/doc/flatpak-docs.xml.in
-index 581bf685..4de8d1f9 100644
+index 581bf685db..4de8d1f9bf 100644
 --- a/doc/flatpak-docs.xml.in
 +++ b/doc/flatpak-docs.xml.in
 @@ -52,6 +52,7 @@
@@ -1209,7 +1233,7 @@ index 581bf685..4de8d1f9 100644
        <xi:include href="@srcdir@/flatpak-remote-delete.xml"/>
 diff --git a/doc/flatpak-preinstall.xml b/doc/flatpak-preinstall.xml
 new file mode 100644
-index 00000000..b774c618
+index 0000000000..b774c618ec
 --- /dev/null
 +++ b/doc/flatpak-preinstall.xml
 @@ -0,0 +1,276 @@
@@ -1490,7 +1514,7 @@ index 00000000..b774c618
 +
 +</refentry>
 diff --git a/doc/meson.build b/doc/meson.build
-index a4cedfbe..9ef8eee1 100644
+index a4cedfbe84..9ef8eee1fd 100644
 --- a/doc/meson.build
 +++ b/doc/meson.build
 @@ -26,6 +26,7 @@ man1 = [
@@ -1502,7 +1526,7 @@ index a4cedfbe..9ef8eee1 100644
    'flatpak-pin',
    'flatpak-list',
 diff --git a/po/POTFILES.in b/po/POTFILES.in
-index b3cb79c0..52600abd 100644
+index b3cb79c0e2..52600abd60 100644
 --- a/po/POTFILES.in
 +++ b/po/POTFILES.in
 @@ -30,6 +30,7 @@ app/flatpak-builtins-permission-reset.c
@@ -1514,7 +1538,7 @@ index b3cb79c0..52600abd 100644
  app/flatpak-builtins-remote-add.c
  app/flatpak-builtins-remote-delete.c
 diff --git a/system-helper/flatpak-system-helper.c b/system-helper/flatpak-system-helper.c
-index 1f950b20..623c2fa0 100644
+index 1f950b20e4..623c2fa04a 100644
 --- a/system-helper/flatpak-system-helper.c
 +++ b/system-helper/flatpak-system-helper.c
 @@ -404,6 +404,7 @@ handle_deploy (FlatpakSystemHelper   *object,
@@ -1544,7 +1568,7 @@ index 1f950b20..623c2fa0 100644
                flatpak_invocation_return_error (invocation, error, "Error deploying");
                return G_DBUS_METHOD_INVOCATION_HANDLED;
 diff --git a/tests/libtest.sh b/tests/libtest.sh
-index 7dad594f..69ae0fef 100644
+index 7dad594fd2..69ae0fefe5 100644
 --- a/tests/libtest.sh
 +++ b/tests/libtest.sh
 @@ -105,6 +105,7 @@ export FLATPAK_SYSTEM_DIR=${TEST_DATA_DIR}/system
@@ -1556,7 +1580,7 @@ index 7dad594f..69ae0fef 100644
  export FLATPAK_FANCY_OUTPUT=0
  export FLATPAK_FORCE_ALLOW_FUZZY_MATCHING=1
 diff --git a/tests/test-basic.sh b/tests/test-basic.sh
-index 76369b35..9f1cfb20 100755
+index 76369b358f..9f1cfb20a2 100755
 --- a/tests/test-basic.sh
 +++ b/tests/test-basic.sh
 @@ -71,7 +71,7 @@ for cmd in install update uninstall list info config repair create-usb \
@@ -1569,7 +1593,7 @@ index 76369b35..9f1cfb20 100755
    ${FLATPAK} $cmd --help > help_out
    head -2 help_out > help_out2
 diff --git a/tests/test-matrix/meson.build b/tests/test-matrix/meson.build
-index fd0b5034..3c20abed 100644
+index fd0b50345c..3c20abed3e 100644
 --- a/tests/test-matrix/meson.build
 +++ b/tests/test-matrix/meson.build
 @@ -45,3 +45,4 @@ wrapped_tests += {'name' : 'test-unused.sh', 'script' : 'test-unused.sh'}
@@ -1579,10 +1603,10 @@ index fd0b5034..3c20abed 100644
 +wrapped_tests += {'name' : 'test-preinstall.sh', 'script' : 'test-preinstall.sh'}
 diff --git a/tests/test-preinstall.sh b/tests/test-preinstall.sh
 new file mode 100755
-index 00000000..23ae094c
+index 0000000000..4c6a4ad966
 --- /dev/null
 +++ b/tests/test-preinstall.sh
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,249 @@
 +#!/bin/bash
 +#
 +# Copyright (C) 2025 Red Hat, Inc
@@ -1604,6 +1628,9 @@ index 00000000..23ae094c
 +
 +set -euo pipefail
 +
++USE_COLLECTIONS_IN_SERVER=yes
++USE_COLLECTIONS_IN_CLIENT=yes
++
 +. $(dirname $0)/libtest.sh
 +
 +mkdir -p $FLATPAK_DATA_DIR/preinstall.d
@@ -1621,11 +1648,17 @@ index 00000000..23ae094c
 +cat << EOF > hello-install-multi.preinstall
 +[Flatpak Preinstall org.test.Hello]
 +[Flatpak Preinstall org.test.Hello2]
++CollectionID=org.test.Collection.test
 +EOF
 +
 +cat << EOF > hello-install-devel.preinstall
 +[Flatpak Preinstall org.test.Hello]
 +Branch=devel
++EOF
++
++cat << EOF > hello-install-collection.preinstall
++[Flatpak Preinstall org.test.Hello2]
++CollectionID=org.test.Collection.test2
 +EOF
 +
 +cat << EOF > bad.preinstall
@@ -1644,30 +1677,20 @@ index 00000000..23ae094c
 +# and the apps
 +# org.test.Hello//master, org.test.Hello//devel,
 +# org.test.Hello2//master, org.test.Hello2//devel
-+setup_repo
++setup_repo test
 +make_updated_runtime test org.test.Collection.test devel HELLO_DEVEL org.test.Hello
 +make_updated_app test org.test.Collection.test devel HELLO_DEVEL org.test.Hello
 +make_updated_app test org.test.Collection.test master HELLO2_MASTER org.test.Hello2
 +make_updated_app test org.test.Collection.test devel HELLO2_DEVEL org.test.Hello2
 +
-+# make the test repo available by adding the test remote
-+cat << EOF > test.flatpakrepo
-+[Flatpak Repo]
-+Url=http://127.0.0.1:${port}/test
-+GPGKey=${FL_GPG_BASE64}
-+Title=The Title
-+Comment=The Comment
-+Description=The Description
-+Homepage=https://the.homepage/
-+Icon=https://the.icon/
-+EOF
++setup_repo test2
++make_updated_app test2 org.test.Collection.test2 master HELLO2_MASTER_C2 org.test.Hello2
 +
-+${FLATPAK} ${U} remote-add test test.flatpakrepo >&2
-+
-+echo "1..9"
++echo "1..10"
 +
 +# just checking that the test remote got added
-+assert_remote_has_config test url "http://127.0.0.1:${port}/test"
++assert_remote_has_config test-repo url "http://127.0.0.1:${port}/test"
++assert_remote_has_config test2-repo url "http://127.0.0.1:${port}/test2"
 +
 +ok "setup"
 +
@@ -1681,6 +1704,7 @@ index 00000000..23ae094c
 +# make sure nothing is installed
 +${FLATPAK} ${U} list --columns=ref > list-log
 +assert_file_empty list-log
++! ostree config --repo=$XDG_DATA_HOME/flatpak/repo get --group "core" xa.preinstalled > /dev/null &> /dev/null
 +
 +# The preinstall config wants org.test.Hello.
 +cp hello-install.preinstall $FLATPAK_DATA_DIR/preinstall.d/
@@ -1695,6 +1719,9 @@ index 00000000..23ae094c
 +assert_not_file_has_content list-log "^org\.test\.Hello2/.*/devel$"
 +assert_file_has_content     list-log "^org\.test\.Platform/.*/master$"
 +assert_not_file_has_content list-log "^org\.test\.Platform/.*/devel$"
++
++ostree config --repo=$XDG_DATA_HOME/flatpak/repo get --group "core" xa.preinstalled > marked-preinstalled
++assert_file_has_content marked-preinstalled "^app/org\.test\.Hello/.*/master$"
 +
 +ok "simple preinstall"
 +
@@ -1739,7 +1766,7 @@ index 00000000..23ae094c
 +
 +ok "uninstall preinstall"
 +
-+${FLATPAK} ${U} install test -y org.test.Hello master >&2
++${FLATPAK} ${U} install test-repo -y org.test.Hello master >&2
 +
 +${FLATPAK} ${U} list --columns=ref > list-log
 +assert_file_has_content     list-log "^org\.test\.Hello/.*/master$"
@@ -1771,7 +1798,7 @@ index 00000000..23ae094c
 +rm -rf $FLATPAK_DATA_DIR/preinstall.d/*
 +
 +# Add a config file which wants org.test.Hello and org.test.Hello2 installed
-+cp hello-install-multi.preinstall $FLATPAK_CONFIG_DIR/preinstall.d/
++cp hello-install-multi.preinstall $FLATPAK_DATA_DIR/preinstall.d/
 +
 +${FLATPAK} ${U} preinstall -y >&2
 +
@@ -1783,6 +1810,10 @@ index 00000000..23ae094c
 +assert_not_file_has_content list-log "^org\.test\.Hello2/.*/devel$"
 +assert_file_has_content     list-log "^org\.test\.Platform/.*/master$"
 +assert_not_file_has_content list-log "^org\.test\.Platform/.*/devel$"
++
++# Also make sure we installed the app from the right CollectionID
++${FLATPAK} ${U} run org.test.Hello2 > hello2-output
++assert_file_has_content hello2-output "HELLO2_MASTER$"
 +
 +ok "install multi"
 +
@@ -1802,6 +1833,22 @@ index 00000000..23ae094c
 +
 +ok "overwrite branch"
 +
++# Overwrite the CollectionID we're installing org.test.Hello2 from
++cp hello-install-collection.preinstall $FLATPAK_CONFIG_DIR/preinstall.d/
++
++# Changing the collection id doesn't automatically change apps over so we need
++# to uninstall and mark it as not pre-installed
++${FLATPAK} ${U} uninstall -y org.test.Hello2 >&2
++ostree config --repo=$XDG_DATA_HOME/flatpak/repo unset --group "core" xa.preinstalled
++
++${FLATPAK} ${U} preinstall -y >&2
++
++# Make sure the app with the right CollectionID got installed
++${FLATPAK} ${U} run org.test.Hello2 > hello2-output
++assert_file_has_content hello2-output "HELLO2_MASTER_C2$"
++
++ok "change collection id"
++
 +# Make sure some config file parsing edge cases don't blow up
 +cp bad.preinstall $FLATPAK_CONFIG_DIR/preinstall.d/
 +
@@ -1810,6 +1857,3 @@ index 00000000..23ae094c
 +
 +ok "bad config"
 \ No newline at end of file
--- 
-2.47.1
-
