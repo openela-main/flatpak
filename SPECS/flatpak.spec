@@ -12,7 +12,7 @@
 
 Name:           flatpak
 Version:        1.16.0
-Release:        6%{?dist}
+Release:        6%{?dist}.1
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -45,6 +45,8 @@ Patch3:         flatpak-add-support-for-preinstalling-flatpaks.patch
 Patch4:         flatpak-enable-collection-ids-for-oci-remotes.patch
 # Fix crash and installatcion of OCI images
 Patch5:         flatpak-pass-token-to-flatpak-image-source-new-remote.patch
+# /etc/pki/entitlement
+Patch6:         flatpak-for-registry.redhat.io-get-certificates-from-etc-pki.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -314,6 +316,10 @@ fi
 
 
 %changelog
+* Mon Oct 13 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-6.1
+- Get certificates from /etc/pki/entitlement for registry.redhat.io
+  Resolves: RHEL-127936
+
 * Mon Aug 04 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-6
 - Fix wrongly marked failed installs as pre-installed
   Resolves: RHEL-89989
