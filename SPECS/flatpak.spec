@@ -12,7 +12,7 @@
 
 Name:           flatpak
 Version:        1.16.0
-Release:        6%{?dist}.1
+Release:        9%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -47,6 +47,10 @@ Patch4:         flatpak-enable-collection-ids-for-oci-remotes.patch
 Patch5:         flatpak-pass-token-to-flatpak-image-source-new-remote.patch
 # /etc/pki/entitlement
 Patch6:         flatpak-for-registry.redhat.io-get-certificates-from-etc-pki.patch
+# Enable FIPS support
+Patch7:         flatpak-run-Enable-FIPS-crypto-policy-if-it-is-enabled-on-th.patch
+# Stop killing the session when stopping background apps
+Patch9:         flatpak-kill-Do-not-kill-pid-0-and-embrace-races.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -316,9 +320,17 @@ fi
 
 
 %changelog
-* Mon Oct 13 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-6.1
+* Tue Jan 13 2026 Sebastian Wick <sebastian.wick@redhat.com> - 1.16.0-9
+- kill: Do not kill pid 0 and embrace races
+  Resolves: RHEL-140924
+
+* Tue Dec 16 2025 Sebastian Wick <sebastian.wick@redhat.com> - 1.16.0-8
+- Enable FIPS crypto policy if it is enabled on the host
+  Resolves: RHEL-77484
+
+* Mon Oct 13 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-7
 - Get certificates from /etc/pki/entitlement for registry.redhat.io
-  Resolves: RHEL-127936
+  Resolves: RHEL-85004
 
 * Mon Aug 04 2025 Jan Grulich <jgrulich@redhat.com> - 1.16.0-6
 - Fix wrongly marked failed installs as pre-installed
