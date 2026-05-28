@@ -12,7 +12,7 @@
 
 Name:           flatpak
 Version:        1.16.0
-Release:        9%{?dist}
+Release:        9%{?dist}.1
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -51,6 +51,48 @@ Patch6:         flatpak-for-registry.redhat.io-get-certificates-from-etc-pki.pat
 Patch7:         flatpak-run-Enable-FIPS-crypto-policy-if-it-is-enabled-on-th.patch
 # Stop killing the session when stopping background apps
 Patch9:         flatpak-kill-Do-not-kill-pid-0-and-embrace-races.patch
+
+# CVE-2026-34078
+Patch100:       CVE-2026-34078-1-update-subtree-libglnx-2026-04-07.patch
+Patch101:       CVE-2026-34078-2-flatpak-bwrap-add-dup-ing-variant-flatpak-bwrap-add-args-data-fd-dup.patch
+Patch102:       CVE-2026-34078-3-utils-add-flatpak-parse-fd.patch
+Patch103:       CVE-2026-34078-4-flatpak-bwrap-use-glnx-close-fd-as-clear-func.patch
+Patch104:       CVE-2026-34078-5-run-use-o-path-fds-for-the-runtime-and-app-deploy-directories.patch
+Patch105:       CVE-2026-34078-6-run-add-usr-fd-and-app-fd-options.patch
+Patch106:       CVE-2026-34078-7-run-add-ro-bind-fds-to-flatpak-run-app.patch
+Patch107:       CVE-2026-34078-8-run-add-ro-bind-fd-options.patch
+Patch108:       CVE-2026-34078-9-portal-use-bind-fd-app-fd-and-usr-fd-options-to-avoid-races.patch
+Patch109:       CVE-2026-34078-10-run-fix-checking-wrong-variable-in-runtime-fd-selection.patch
+Patch110:       CVE-2026-34078-11-run-mount-original-app-on-run-parent-app-when-using-app-path.patch
+Patch111:       CVE-2026-34078-12-portal-update-max-fd-after-creating-the-instance-id-pipe.patch
+Patch112:       CVE-2026-34078-13-run-fix-fd-tracking-in-flatpak-run-add-app-info-args.patch
+Patch113:       CVE-2026-34078-14-utils-improve-error-message-when-passing-an-fd-numer-which-is-not-a-fd.patch
+Patch114:       CVE-2026-34078-15-run-do-not-close-bind-ro-bind.patch
+Patch115:       CVE-2026-34078-16-run-use-the-same-fd-validation-for-all-fd-options.patch
+Patch116:       CVE-2026-34078-17-run-add-bind-fd-and-ro-bind-fd-binds-after-all-other-binds.patch
+Patch117:       CVE-2026-34078-18-portal-use-g-array-index-to-read-from-expose-fds-expose-fds-ro.patch
+Patch118:       CVE-2026-34078-19-run-fix-backport-mistake.patch
+Patch119:       CVE-2026-34078-20-tests-test-run-custom-test-usr-path-usr-fd-app-path-app-fd.patch
+Patch120:       CVE-2026-34078-21-tests-test-run-custom-test-bind-fd-and-ro-bind-fd.patch
+Patch121:       CVE-2026-34078-22-run-cope-with-an-empty-runtime.patch
+Patch122:       CVE-2026-34078-23-dir-in-apply-extra-data-don-t-assume-there-is-always-a-runtime.patch
+Patch123:       CVE-2026-34078-24-tests-add-test-extra-data-sh-to-test-extra-data-installation.patch
+Patch124:       CVE-2026-34078-25-tests-add-test-for-noruntime-extra-data-app.patch
+Patch125:       CVE-2026-34078-26-utils-add-flatpak-set-cloexec.patch
+Patch126:       CVE-2026-34078-27-run-context-mark-fd-arguments-as-close-on-exec.patch
+Patch127:       CVE-2026-34078-28-utils-move-flatpak-get-path-for-fd-to-here.patch
+Patch128:       CVE-2026-34078-29-portal-avoid-crash-if-sandbox-expose-ro-fd-is-out-of-range.patch
+Patch129:       CVE-2026-34078-30-portal-log-and-ignore-unusable-sandbox-expose-fds-instead-of-erroring.patch
+Patch130:       CVE-2026-34078-31-portal-reinstate-flatpak-get-path-for-fd-checks.patch
+Patch131:       CVE-2026-34078-32-libtest-allow-adding-a-new-ref-to-an-existing-temporary-ostree-repo.patch
+Patch132:       CVE-2026-34078-33-tests-check-that-flatpak-run-fd-arguments-do-not-leak-to-the-command.patch
+Patch133:       CVE-2026-34078-34-app-context-never-close-fds-0-1-or-2.patch
+Patch134:       CVE-2026-34078-35-app-context-factor-out-flatpak-accept-fd-argument.patch
+
+# CVE-2026-34079
+Patch135:       CVE-2026-34079-1-utils-only-remove-cached-files-in-the-cache-directory.patch
+Patch136:       CVE-2026-34079-2-utils-do-not-follow-symlinks-in-local-open-file.patch
+Patch137:       CVE-2026-34079-3-system-helper-only-remove-an-ongoing-pull-if-users-match.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -320,6 +362,12 @@ fi
 
 
 %changelog
+* Mon May 18 2026 Jan Grulich <jgrulich@redhat.com> - 1.16.0-9.1
+- Fix arbitrary code execution via crafted symlinks in sandbox-expose options
+  Resolves: RHEL-165630
+- Fix arbitrary file deletion on host via improper cache file path validation
+  Resolves: RHEL-170157
+
 * Tue Jan 13 2026 Sebastian Wick <sebastian.wick@redhat.com> - 1.16.0-9
 - kill: Do not kill pid 0 and embrace races
   Resolves: RHEL-140924

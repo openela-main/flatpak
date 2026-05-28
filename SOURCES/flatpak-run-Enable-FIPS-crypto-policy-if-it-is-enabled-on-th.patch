@@ -1,4 +1,4 @@
-From 5f5aeea8d8be071468fb8e9640554518fb65885e Mon Sep 17 00:00:00 2001
+From 8c8d6faa9f0fc35581e95a9e771490feb94dd9ac Mon Sep 17 00:00:00 2001
 From: Sebastian Wick <sebastian.wick@redhat.com>
 Date: Tue, 16 Dec 2025 17:15:32 +0100
 Subject: [PATCH] run: Enable FIPS crypto policy if it is enabled on the host
@@ -6,26 +6,29 @@ Subject: [PATCH] run: Enable FIPS crypto policy if it is enabled on the host
 This is a close copy of what podman/containers does to support FIPS. Any
 other crypto policy is ignored for now.
 ---
- common/flatpak-run.c | 87 ++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 87 insertions(+)
+ common/flatpak-run.c | 94 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 94 insertions(+)
 
-diff --git ./common/flatpak-run.c ../common/flatpak-run.c
-index 6c319231..b51cc637 100644
---- ./common/flatpak-run.c
-+++ ../common/flatpak-run.c
-@@ -2215,6 +2215,91 @@ flatpak_run_setup_usr_links (FlatpakBwrap *bwrap,
+diff --git a/common/flatpak-run.c b/common/flatpak-run.c
+index dfcef03..121bef3 100644
+--- a/common/flatpak-run.c
++++ b/common/flatpak-run.c
+@@ -2214,6 +2214,98 @@ flatpak_run_setup_usr_links (FlatpakBwrap *bwrap,
      }
  }
  
 +static void
 +flatpak_run_setup_fips (FlatpakBwrap *bwrap,
-+                        GFile        *runtime_files)
++                        int           runtime_fd)
 +{
-+  g_autoptr(GFile) runtime_crypto_policies = NULL;
-+  g_autoptr(GFile) runtime_fips_backend = NULL;
-+  g_autoptr(GFile) runtime_fips_config = NULL;
++  glnx_autofd int crypto_policies_fd = -1;
++  glnx_autofd int fips_backend_fd = -1;
++  glnx_autofd int fips_config_fd = -1;
 +  g_autofree char *fips_enabled = NULL;
 +  g_autoptr(GError) error = NULL;
++
++  if (runtime_fd < 0)
++    return;
 +
 +  if (!g_file_get_contents ("/proc/sys/crypto/fips_enabled",
 +                            &fips_enabled,
@@ -48,35 +51,39 @@ index 6c319231..b51cc637 100644
 +      return;
 +    }
 +
-+  runtime_crypto_policies =
-+    g_file_resolve_relative_path (runtime_files, "etc/crypto-policies");
++  crypto_policies_fd = glnx_chaseat (runtime_fd, "etc/crypto-policies",
++                                     GLNX_CHASE_RESOLVE_BENEATH,
++                                     NULL);
 +
-+  if (!g_file_query_exists (runtime_crypto_policies, NULL))
++  if (crypto_policies_fd < 0)
 +    {
 +      g_info ("FIPS is enabled, but runtime does not support it");
 +      return;
 +    }
 +
-+  runtime_fips_backend =
-+    g_file_resolve_relative_path (runtime_files,
-+                                  "share/crypto-policies/back-ends/FIPS");
++  fips_backend_fd = glnx_chaseat (runtime_fd,
++                                   "share/crypto-policies/back-ends/FIPS",
++                                   GLNX_CHASE_RESOLVE_BENEATH,
++                                   NULL);
 +
-+  if (!g_file_query_exists (runtime_fips_backend, NULL))
++  if (fips_backend_fd < 0)
 +    {
 +      g_info ("FIPS is enabled, but runtime does not support it");
 +      return;
 +    }
 +
-+  runtime_fips_config =
-+    g_file_resolve_relative_path (runtime_files,
-+                                  "share/crypto-policies/default-fips-config");
++  fips_config_fd = glnx_chaseat (runtime_fd,
++                                  "share/crypto-policies/default-fips-config",
++                                  GLNX_CHASE_RESOLVE_BENEATH |
++                                  GLNX_CHASE_MUST_BE_REGULAR,
++                                  NULL);
 +
-+  if (g_file_query_exists (runtime_fips_config, NULL))
++  if (fips_config_fd >= 0)
 +    {
-+      flatpak_bwrap_add_args (bwrap, "--ro-bind",
-+                              flatpak_file_get_path_cached (runtime_fips_config),
-+                              "/etc/crypto-policies/config",
-+                              NULL);
++      flatpak_bwrap_add_args_data_fd (bwrap,
++                                      "--ro-bind-fd",
++                                      g_steal_fd (&fips_config_fd),
++                                      "/etc/crypto-policies/config");
 +    }
 +  else
 +    {
@@ -94,10 +101,10 @@ index 6c319231..b51cc637 100644
 +        }
 +    }
 +
-+  flatpak_bwrap_add_args (bwrap, "--ro-bind",
-+                          flatpak_file_get_path_cached (runtime_fips_backend),
-+                          "/etc/crypto-policies/back-ends",
-+                          NULL);
++  flatpak_bwrap_add_args_data_fd (bwrap,
++                                  "--ro-bind-fd",
++                                  g_steal_fd (&fips_backend_fd),
++                                  "/etc/crypto-policies/back-ends");
 +
 +  g_info ("Enabled FIPS configuration");
 +}
@@ -105,15 +112,15 @@ index 6c319231..b51cc637 100644
  /* Directories in /sys to share with the sandbox if accessible. */
  static const char *const sysfs_dirs[] =
  {
-@@ -2405,6 +2490,8 @@ flatpak_run_setup_base_argv (FlatpakBwrap   *bwrap,
+@@ -2426,6 +2518,8 @@ flatpak_run_setup_base_argv (FlatpakBwrap   *bwrap,
          }
      }
  
-+  flatpak_run_setup_fips (bwrap, runtime_files);
++  flatpak_run_setup_fips (bwrap, runtime_fd);
 +
    if (app_id_dir != NULL)
      {
        g_autoptr(GFile) app_cache_dir = g_file_get_child (app_id_dir, "cache");
 -- 
-2.51.0
+2.54.0
 
