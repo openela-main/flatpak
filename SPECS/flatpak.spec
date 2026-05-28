@@ -3,7 +3,7 @@
 
 Name:           flatpak
 Version:        1.12.9
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -20,6 +20,44 @@ Patch0:         flatpak-Revert-selinux-Permit-using-systemd-userdbd.patch
 
 # Backported upstream patch for CVE-2024-42472
 Patch1:         flatpak-1.12.x-CVE-2024-42472.patch
+
+# CVE-2026-34078
+Patch100:       flatpak-1.12.x-update-libglnx-for-glnx-chaseseat.patch
+Patch101:       CVE-2026-34078-1-flatpak-bwrap-add-dup-ing-variant-flatpak-bwrap-add-args-data-fd-dup.patch
+Patch102:       CVE-2026-34078-2-utils-add-flatpak-parse-fd.patch
+Patch103:       CVE-2026-34078-3-flatpak-bwrap-use-glnx-close-fd-as-clear-func.patch
+Patch104:       CVE-2026-34078-4-run-use-o-path-fds-for-the-runtime-and-app-deploy-directories.patch
+Patch105:       CVE-2026-34078-5-run-add-usr-fd-and-app-fd-options.patch
+Patch106:       CVE-2026-34078-6-run-add-ro-bind-fds-to-flatpak-run-app.patch
+Patch107:       CVE-2026-34078-7-run-add-ro-bind-fd-options.patch
+Patch108:       CVE-2026-34078-8-portal-use-bind-fd-app-fd-and-usr-fd-options-to-avoid-races.patch
+Patch109:       CVE-2026-34078-9-run-fix-checking-wrong-variable-in-runtime-fd-selection.patch
+Patch110:       CVE-2026-34078-10-run-mount-original-app-on-run-parent-app-when-using-app-path.patch
+Patch111:       CVE-2026-34078-11-portal-update-max-fd-after-creating-the-instance-id-pipe.patch
+Patch112:       CVE-2026-34078-12-run-fix-fd-tracking-in-flatpak-run-add-app-info-args.patch
+Patch113:       CVE-2026-34078-13-utils-improve-error-message-when-passing-an-fd-numer-which-is-not-a-fd.patch
+Patch114:       CVE-2026-34078-14-run-do-not-close-bind-ro-bind.patch
+Patch115:       CVE-2026-34078-15-run-use-the-same-fd-validation-for-all-fd-options.patch
+Patch116:       CVE-2026-34078-16-run-add-bind-fd-and-ro-bind-fd-binds-after-all-other-binds.patch
+Patch117:       CVE-2026-34078-17-portal-use-g-array-index-to-read-from-expose-fds-expose-fds-ro.patch
+Patch118:       CVE-2026-34078-18-run-fix-backport-mistake.patch
+Patch119:       CVE-2026-34078-19-run-cope-with-an-empty-runtime.patch
+Patch120:       CVE-2026-34078-20-dir-in-apply-extra-data-don-t-assume-there-is-always-a-runtime.patch
+Patch121:       CVE-2026-34078-21-utils-add-flatpak-set-cloexec.patch
+Patch122:       CVE-2026-34078-22-run-context-mark-fd-arguments-as-close-on-exec.patch
+Patch123:       CVE-2026-34078-23-utils-move-flatpak-get-path-for-fd-to-here.patch
+Patch124:       CVE-2026-34078-24-portal-avoid-crash-if-sandbox-expose-ro-fd-is-out-of-range.patch
+Patch125:       CVE-2026-34078-25-portal-log-and-ignore-unusable-sandbox-expose-fds-instead-of-erroring.patch
+Patch126:       CVE-2026-34078-26-portal-reinstate-flatpak-get-path-for-fd-checks.patch
+Patch127:       CVE-2026-34078-27-libtest-allow-adding-a-new-ref-to-an-existing-temporary-ostree-repo.patch
+Patch128:       CVE-2026-34078-28-app-context-never-close-fds-0-1-or-2.patch
+Patch129:       CVE-2026-34078-29-app-context-factor-out-flatpak-accept-fd-argument.patch
+
+# CVE-2026-34079
+Patch130:       CVE-2026-34079-1-utils-only-remove-cached-files-in-the-cache-directory.patch
+Patch131:       CVE-2026-34079-2-utils-do-not-follow-symlinks-in-local-open-file.patch
+Patch132:       CVE-2026-34079-3-system-helper-only-remove-an-ongoing-pull-if-users-match.patch
+
 
 BuildRequires:  pkgconfig(appstream-glib)
 BuildRequires:  pkgconfig(dconf)
@@ -280,6 +318,12 @@ fi
 
 
 %changelog
+* Wed May 20 2026 Jan Grulich <jgrulich@redhat.com> - 1.12.9-4
+- Fix arbitrary code execution via crafted symlinks in sandbox-expose options
+  Resolves: RHEL-165633
+- Fix arbitrary file deletion on host via improper cache file path validation
+  Resolves: RHEL-170160
+
 * Wed Sep 04 2024 Kalev Lember <klember@redhat.com> - 1.12.9-3
 - Fix previous changelog entry
 
