@@ -1,0 +1,39 @@
+From 592e8c6704d310e3b6418caff52e0cc85271c8e3 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Mon, 27 Jul 2026 16:00:52 +0200
+Subject: [PATCH] oci: Avoid overflow in delta_read_data
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+delta_read_data computed g_malloc(size + 1) where size came from the
+delta stream. If size equals G_MAXSIZE, size + 1 wraps to zero and
+g_malloc returns a minimal allocation, then g_input_stream_read_all
+writes size bytes into it — a heap buffer overflow.
+
+Resolves: https://github.com/flatpak/flatpak/security/advisories/GHSA-jr92-2v97-wgvc
+---
+ common/flatpak-oci-registry.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index c89061b2..bce646d3 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -2032,7 +2032,12 @@ delta_read_data (GInputStream   *in,
+                  GCancellable   *cancellable,
+                  GError        **error)
+ {
+-  g_autofree guchar *buf = g_malloc (size+1);
++  g_autofree guchar *buf = NULL;
++
++  if (size > SIZE_MAX - 1)
++    return glnx_null_throw (error, _("Invalid delta file format"));
++
++  buf = g_malloc (size + 1);
+ 
+   if (!g_input_stream_read_all (in, buf, size, NULL, cancellable, error))
+     return NULL;
+-- 
+2.55.0
+

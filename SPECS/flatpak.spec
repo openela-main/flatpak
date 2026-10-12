@@ -12,7 +12,7 @@
 
 Name:           flatpak
 Version:        1.16.0
-Release:        9%{?dist}.1
+Release:        9%{?dist}.4
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -93,6 +93,44 @@ Patch134:       CVE-2026-34078-35-app-context-factor-out-flatpak-accept-fd-argum
 Patch135:       CVE-2026-34079-1-utils-only-remove-cached-files-in-the-cache-directory.patch
 Patch136:       CVE-2026-34079-2-utils-do-not-follow-symlinks-in-local-open-file.patch
 Patch137:       CVE-2026-34079-3-system-helper-only-remove-an-ongoing-pull-if-users-match.patch
+
+# CVE-2026-90616
+Patch138:       chase-add-internal-glnx-chaseat-full-for-a-strategic-callback.patch
+Patch139:       chase-add-glnx-chase-and-mkdirat.patch
+Patch140:       tests-fix-checks-where-we-expect-a-command-to-fail.patch
+Patch141:       CVE-2026-90616-1-run-harden-ensure-data-dir-and-var-setup-against-symlink-attacks.patch
+Patch142:       CVE-2026-90616-2-test-run-check-that-the-way-com-valvesoftware-steam-behaves-still-works.patch
+Patch143:       CVE-2026-90616-3-tests-add-a-regression-test-for-ghsa-8688-9x26-hhxj.patch
+
+# CVE-2026-96808
+# https://github.com/flatpak/flatpak/commit/37fb84ec00005ce3e368f7a5afb9743aedea24a2
+# https://github.com/flatpak/flatpak/commit/4d1eb212237069681b1f994e2b5b61e40015050f
+# https://github.com/flatpak/flatpak/commit/076f77a4775490b2aef43f4e01eeee9aa965bd21
+# https://github.com/flatpak/flatpak/commit/769ad563bae82b948496a7edffa5eb3f71d0cc72
+Patch144:       revokefs-avoid-symlink-path-traversal-out-of-basefd-in-simple-cases.patch
+Patch145:       revokefs-avoid-symlink-path-traversal-in-link-rename.patch
+Patch146:       revokefs-avoid-symlink-path-traversal-in-symlink.patch
+Patch147:       revokefs-avoid-symlink-path-traversal-in-chmod.patch
+
+# CVE-2026-96275
+# https://github.com/flatpak/flatpak/commit/fb8ae524738e0a0097a6d64bfcda71552174b7fb
+# https://github.com/flatpak/flatpak/commit/c0a109aa4f861f557aed60c42d0ee64d2c3a943c
+# https://github.com/flatpak/flatpak/commit/104c7a63bca482155ace642d59d4765f57f4ecaa
+# https://github.com/flatpak/flatpak/commit/c9b4b4946a7fc8d4a79a454a9d70faee5f7af820
+# https://github.com/flatpak/flatpak/commit/de3decabfd2bc62a774698342d1a9e8ea98077d7
+Patch148:       utils-add-flatpak-cp-a-at-a-fd-based-flatpak-cp-a-variant.patch
+Patch149:       utils-make-flatpak-cp-a-a-wrapper-around-flatpak-cp-a-at.patch
+Patch150:       dir-validate-extra-data-name.patch
+Patch151:       dir-use-chaseat-in-extract-extra-data-to-prevent-path-traversal.patch
+Patch152:       dir-use-chaseat-in-apply-extra-data-to-prevent-path-traversal.patch
+
+# CVE-2026-96280
+# https://github.com/flatpak/flatpak/commit/6be548dd3ac780407ff3cc5824eb9d2acb9f406a
+# https://github.com/flatpak/flatpak/commit/592e8c6704d310e3b6418caff52e0cc85271c8e3
+# https://github.com/flatpak/flatpak/commit/a79764d78b29aa592b612061071b2c361bda4f9e
+Patch153:       oci-use-gsize-for-oci-delta-sizes.patch
+Patch154:       oci-avoid-overflow-in-delta-read-data.patch
+Patch155:       oci-limit-delta-path-length-to-path-max.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -362,6 +400,22 @@ fi
 
 
 %changelog
+* Mon Oct 05 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.4
+- Avoid symlink path traversal in revokefs writer (CVE-2026-96808)
+  Resolves: RHEL-267891
+- Prevent arbitrary write as root via extra-data extraction (CVE-2026-96275)
+  Resolves: RHEL-267432
+- Use gsize for OCI delta sizes and harden delta parser (CVE-2026-96280)
+  Resolves: RHEL-271519
+
+* Fri Oct 02 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.3
+- Align backport with the other branches
+  Resolves: RHEL-258970
+
+* Mon Sep 14 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 1.16.0-9.2
+- Harden data dir and var setup against symlink attacks
+  Resolves: RHEL-258970
+
 * Mon May 18 2026 Jan Grulich <jgrulich@redhat.com> - 1.16.0-9.1
 - Fix arbitrary code execution via crafted symlinks in sandbox-expose options
   Resolves: RHEL-165630

@@ -1,0 +1,132 @@
+From 03a2be6c6844c3ce54c42fca57ffae59cba1a53a Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Tue, 14 Apr 2026 21:16:21 +0200
+Subject: [PATCH] tests: Fix checks where we expect a command to fail
+
+I was convinced that the pattern `! command` with -e aborts when
+`command` fails. This is not the case (the result of `false` is the same
+as `! true` but somehow this doesn't matter).
+
+Fix the tests and use the newly introduced `assert_fail` function. One
+could also use `command && assert_not_reached "message"` but who has
+time to write error messages for all the cases.
+
+[We need this for some of the tests for later security fixes -smcv]
+
+(cherry-picked from commit 68343e938f66051462e0ae3003d0acaca9a76a72)
+---
+ tests/libtest.sh         |  9 +++++++++
+ tests/test-run-custom.sh | 22 +++++++++++-----------
+ 2 files changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 7004f2d1..058e7d99 100644
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -282,6 +282,15 @@ assert_remote_has_no_config () {
+     } 3> /dev/null
+ }
+ 
++assert_fail () {
++    if "$@"; then
++        { { local BASH_XTRACEFD=3; } 2> /dev/null
++            echo "Command '$*' should not have succeeded at $(basename ${BASH_SOURCE[1]}):${BASH_LINENO[0]}" >&2
++            exit 1
++        } 3> /dev/null
++    fi
++}
++
+ export FL_GPG_HOMEDIR=${TEST_DATA_DIR}/gpghome
+ export FL_GPG_HOMEDIR2=${TEST_DATA_DIR}/gpghome2
+ mkdir -p ${FL_GPG_HOMEDIR}
+diff --git a/tests/test-run-custom.sh b/tests/test-run-custom.sh
+index 4868b8b5..77368666 100755
+--- a/tests/test-run-custom.sh
++++ b/tests/test-run-custom.sh
+@@ -51,7 +51,7 @@ assert_file_has_content hello_out '^Hello world, from a runtime$'
+ 
+ ok "setup"
+ 
+-! run --app-path="" --command=/app/bin/hello.sh org.test.Hello > /dev/null
++assert_fail run --app-path="" --command=/app/bin/hello.sh org.test.Hello > /dev/null
+ 
+ run --app-path="" --command=/usr/bin/runtime_hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a runtime$'
+@@ -59,7 +59,7 @@ assert_file_has_content hello_out '^Hello world, from a runtime$'
+ run --app-path="" --command=/run/parent/app/bin/hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a sandbox$'
+ 
+-! run --app-path="" --command=/run/parent/usr/bin/runtime_hello.sh org.test.Hello > /dev/null
++assert_fail run --app-path="" --command=/run/parent/usr/bin/runtime_hello.sh org.test.Hello > /dev/null
+ 
+ ok "empty app path"
+ 
+@@ -72,11 +72,11 @@ assert_file_has_content hello_out '^Hello world, from a runtime$'
+ run --app-path=custom-app/files --command=/run/parent/app/bin/hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a sandbox$'
+ 
+-! run --app-path=custom-app/files --command=/run/parent/usr/bin/runtime_hello.sh org.test.Hello > /dev/null
++assert_fail run --app-path=custom-app/files --command=/run/parent/usr/bin/runtime_hello.sh org.test.Hello > /dev/null
+ 
+ ok "custom app path"
+ 
+-! run --app-path=path-which-does-not-exist org.test.Hello > /dev/null
++assert_fail run --app-path=path-which-does-not-exist org.test.Hello > /dev/null
+ 
+ ok "bad custom app path"
+ 
+@@ -85,7 +85,7 @@ run --app-fd=3 --command=/app/bin/hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a sandboxCUSTOM$'
+ exec 3>&-
+ 
+-! run --app-fd=3 --command=/app/bin/hello.sh org.test.Hello > /dev/null
++assert_fail run --app-fd=3 --command=/app/bin/hello.sh org.test.Hello > /dev/null
+ 
+ ok "custom app fd"
+ 
+@@ -95,14 +95,14 @@ assert_file_has_content hello_out '^Hello world, from a sandbox$'
+ run --usr-path=custom-runtime/files --command=/usr/bin/runtime_hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a runtimeCUSTOM$'
+ 
+-! run --usr-path=custom-runtime/files --command=/run/parent/app/bin/hello.sh org.test.Hello > /dev/null
++assert_fail run --usr-path=custom-runtime/files --command=/run/parent/app/bin/hello.sh org.test.Hello > /dev/null
+ 
+ run --usr-path=custom-runtime/files --command=/run/parent/usr/bin/runtime_hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a runtime$'
+ 
+ ok "custom usr path"
+ 
+-! run --usr-path=path-which-does-not-exist org.test.Hello > /dev/null
++assert_fail run --usr-path=path-which-does-not-exist org.test.Hello > /dev/null
+ 
+ ok "bad custom usr path"
+ 
+@@ -116,7 +116,7 @@ run --usr-fd=3 --command=/usr/bin/runtime_hello.sh org.test.Hello > hello_out
+ assert_file_has_content hello_out '^Hello world, from a runtimeCUSTOM$'
+ exec 3>&-
+ 
+-! run --usr-fd=3 --command=/app/bin/hello.sh org.test.Hello > /dev/null
++assert_fail run --usr-fd=3 --command=/app/bin/hello.sh org.test.Hello > /dev/null
+ 
+ ok "custom usr fd"
+ 
+@@ -138,8 +138,8 @@ assert_file_has_content hello_out '^Hello world, from a runtime$'
+ 
+ ok "custom usr and app path"
+ 
+-! run --usr-path=custom-runtime/files --app-path="" \
+-    --command=/app/bin/hello.sh org.test.Hello > /dev/null
++assert_fail run --usr-path=custom-runtime/files --app-path="" \
++               --command=/app/bin/hello.sh org.test.Hello > /dev/null
+ 
+ run --usr-path=custom-runtime/files --app-path="" \
+     --command=/usr/bin/runtime_hello.sh org.test.Hello > hello_out
+@@ -173,7 +173,7 @@ assert_file_has_content hello_out '^baz$'
+ exec 3>&-
+ 
+ exec 3< "${path}"
+-! run --ro-bind-fd=3 --command=bash org.test.Hello -c "echo baz > ${path}" > /dev/null
++assert_fail run --ro-bind-fd=3 --command=bash org.test.Hello -c "echo baz > ${path}" > /dev/null
+ exec 3>&-
+ 
+ ok "bind-fd and ro-bind-fd"
