@@ -1,0 +1,117 @@
+From b00c7b5073a25bdc34653642de543b5ef6fe0225 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 29 Jul 2026 21:10:32 +0200
+Subject: [PATCH] revokefs: Avoid symlink path traversal in link(), rename()
+
+Again, use glnx_chaseat to ensure that all the attacker-controlled paths
+end up inside the basefd directory. These two syscalls are a bit more
+complicated, and take two paths.
+
+[smcv: Separated from a larger commit for better reviewability]
+Co-authored-by: Simon McVittie <smcv@collabora.com>
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-qrwq-7qwx-q9rp
+
+Backport of commit b00c7b5073a25bdc34653642de543b5ef6fe0225.
+
+Adapted for 1.12.9: handle_rename() uses renameat() rather than renameat2() with flags (not present in 1.12.9).
+
+---
+ revokefs/writer.c | 57 +++++++++++++++++++++++++++--------------------
+ 1 file changed, 33 insertions(+), 24 deletions(-)
+
+diff --git a/revokefs/writer.c b/revokefs/writer.c
+index c22c0a9..ad5c11a 100644
+--- a/revokefs/writer.c
++++ b/revokefs/writer.c
+@@ -251,6 +251,23 @@ chase_request_path (RevokefsRequest *request,
+   return chase_parent (request->data, data_size, out_name);
+ }
+ 
++static void
++chase_request_2path (RevokefsRequest *request,
++                     gsize data_size,
++                     int *out_fd1, char **out_name1,
++                     int *out_fd2, char **out_name2)
++{
++  if (request->arg1 >= data_size)
++    {
++      g_printerr ("Invalid path1 size\n");
++      exit (1);
++    }
++
++  *out_fd1 = chase_parent (request->data, request->arg1, out_name1);
++  *out_fd2 = chase_parent (request->data + request->arg1,
++                           data_size - request->arg1, out_name2);
++}
++
+ static gboolean
+ validate_path (char *path)
+ {
+@@ -314,22 +331,6 @@ get_any_path_and_valid_path (RevokefsRequest *request,
+   *valid_path2 = get_valid_path (request->data + request->arg1, data_size - request->arg1);
+ }
+ 
+-static void
+-get_valid_2path (RevokefsRequest *request,
+-                 gsize data_size,
+-                 char **path1,
+-                 char **path2)
+-{
+-  if (request->arg1 >= data_size)
+-    {
+-      g_printerr ("Invalid path1 size\n");
+-      exit (1);
+-    }
+-
+-  *path1 = get_valid_path (request->data, request->arg1);
+-  *path2 = get_valid_path (request->data + request->arg1, data_size - request->arg1);
+-}
+-
+ static ssize_t
+ handle_mkdir (RevokefsRequest *request,
+               gsize data_size,
+@@ -427,12 +428,16 @@ handle_link (RevokefsRequest *request,
+              gsize data_size,
+              RevokefsResponse *response)
+ {
+-  g_autofree char *from = NULL;
+-  g_autofree char *to = NULL;
++  g_autofree char *from_name = NULL;
++  g_autofree char *to_name = NULL;
++  glnx_autofd int from_parent_fd = -1;
++  glnx_autofd int to_parent_fd = -1;
+ 
+-  get_valid_2path (request, data_size,  &from, &to);
++  chase_request_2path (request, data_size,
++                       &from_parent_fd, &from_name,
++                       &to_parent_fd, &to_name);
+ 
+-  if (linkat (basefd, from, basefd, to, 0) == -1)
++  if (linkat (from_parent_fd, from_name, to_parent_fd, to_name, 0) == -1)
+     response->result = -errno;
+   else
+     response->result = 0;
+@@ -451,12 +456,16 @@ handle_rename (RevokefsRequest *request,
+              gsize data_size,
+              RevokefsResponse *response)
+ {
+-  g_autofree char *from = NULL;
+-  g_autofree char *to = NULL;
++  g_autofree char *from_name = NULL;
++  g_autofree char *to_name = NULL;
++  glnx_autofd int from_parent_fd = -1;
++  glnx_autofd int to_parent_fd = -1;
+ 
+-  get_valid_2path (request, data_size,  &from, &to);
++  chase_request_2path (request, data_size,
++                       &from_parent_fd, &from_name,
++                       &to_parent_fd, &to_name);
+ 
+-  if (renameat (basefd, from, basefd, to) == -1)
++  if (renameat (from_parent_fd, from_name, to_parent_fd, to_name) == -1)
+     response->result = -errno;
+   else
+     response->result = 0;
+-- 
+2.55.0
+
