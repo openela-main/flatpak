@@ -1,0 +1,77 @@
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Wed, 30 Sep 2026 17:30:00 +0200
+Subject: [PATCH] glnx/chase: Tolerate missing STATX_MNT_ID on older kernels
+
+RHEL 8 / CentOS Stream 8 kernels (4.18-based) implement statx(2) but do
+not return STATX_MNT_ID / STATX_MNT_ID_UNIQUE (those landed in Linux 5.8).
+Bundled libglnx's glnx_chase_statx() currently treats a missing mount id
+as a hard error:
+
+  error: statx didn't return all required fields: No data available
+
+That failure is hit on every flatpak run after the CVE-2026-90616 backport
+switches ensure_data_dir / /var setup to glnx_chase_and_mkdirat(), because
+the mkdir callback forces the openat2-less chase_manual() path:
+
+  flatpak run
+    -> flatpak_builtin_run
+      -> flatpak_run_app
+        -> flatpak_ensure_data_dir
+          -> glnx_chase_and_mkdirat (callback = chase_and_mkdir)
+            -> glnx_chaseat_full  (skips openat2: callback != NULL)
+              -> chase_manual
+                -> glnx_chase_statx (root_fd)
+                  -> ENODATA / "statx didn't return all required fields"
+
+Relax the check: still require TYPE and INO, but allow missing mount id.
+When comparing mounts in glnx_statx_mount_same(), prefer mount id when
+present; otherwise fall back to stx_dev_major/stx_dev_minor. Device
+identity is coarser than mount id (bind mounts of the same superblock
+share st_dev), but creating such mounts requires mount privilege that a
+sandboxed Flatpak app does not have. The GHSA-8688-9x26-hhxj defense
+(RESOLVE_BENEATH + --bind-fd against escape symlinks) remains intact.
+
+Assisted-by: Cursor
+---
+ subprojects/libglnx/glnx-chase.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+--- a/subprojects/libglnx/glnx-chase.c
++++ b/subprojects/libglnx/glnx-chase.c
+@@ -104,10 +104,17 @@
+ glnx_statx_mount_same (const struct glnx_statx *a,
+                        const struct glnx_statx *b)
+ {
+-  g_assert ((a->stx_mask & (GLNX_STATX_MNT_ID | GLNX_STATX_MNT_ID_UNIQUE)) != 0);
+-  g_assert ((b->stx_mask & (GLNX_STATX_MNT_ID | GLNX_STATX_MNT_ID_UNIQUE)) != 0);
++  /* Prefer mount id when the kernel provides it (Linux 5.8+). */
++  if ((a->stx_mask & (GLNX_STATX_MNT_ID | GLNX_STATX_MNT_ID_UNIQUE)) != 0 &&
++      (b->stx_mask & (GLNX_STATX_MNT_ID | GLNX_STATX_MNT_ID_UNIQUE)) != 0)
++    return a->stx_mnt_id == b->stx_mnt_id;
+ 
+-  return a->stx_mnt_id == b->stx_mnt_id;
++  /* Older kernels (e.g. RHEL 8 / 4.18) implement statx but not STATX_MNT_ID.
++   * Fall back to filesystem device identity. This is coarser than mount id
++   * (bind mounts of the same superblock share st_dev) but is sufficient for
++   * flatpak's ensure_data_dir /var setup under ~/.var/app. */
++  return a->stx_dev_major == b->stx_dev_major &&
++         a->stx_dev_minor == b->stx_dev_minor;
+ }
+ 
+ static gboolean
+@@ -124,9 +131,13 @@
+                    error))
+     return FALSE;
+ 
++  /* TYPE and INO are required. Mount id is optional: kernels before Linux 5.8
++   * (including RHEL 8) may omit STATX_MNT_ID / STATX_MNT_ID_UNIQUE. Without
++   * this fallback, flatpak run fails with:
++   *   error: statx didn't return all required fields: No data available
++   */
+   if ((buf->stx_mask & (GLNX_STATX_TYPE | GLNX_STATX_INO)) !=
+-        (GLNX_STATX_TYPE | GLNX_STATX_INO) ||
+-      (buf->stx_mask & (GLNX_STATX_MNT_ID | GLNX_STATX_MNT_ID_UNIQUE)) == 0)
++        (GLNX_STATX_TYPE | GLNX_STATX_INO))
+     {
+       errno = ENODATA;
+       return glnx_throw_errno_prefix (error,
