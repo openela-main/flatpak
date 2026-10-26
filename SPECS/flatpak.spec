@@ -3,7 +3,7 @@
 
 Name:           flatpak
 Version:        1.12.9
-Release:        4%{?dist}.4
+Release:        4%{?dist}.6
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -99,6 +99,16 @@ Patch147:       dir-use-chaseat-in-apply-extra-data-to-prevent-path-traversal.pa
 Patch148:       oci-use-gsize-for-oci-delta-sizes.patch
 Patch149:       oci-avoid-overflow-in-delta-read-data.patch
 Patch150:       oci-limit-delta-path-length-to-path-max.patch
+
+# CVE-2026-97023
+# https://github.com/flatpak/flatpak/commit/3f404693fa04100dff5fc7068506156daff27b33
+# https://github.com/flatpak/flatpak/commit/9454433f70b030d3030a9d22e11e9906a54b1178
+Patch151:       dir-add-fd-relative-helpers-for-accessing-deploy-directories.patch
+Patch152:       dir-use-fd-relative-operations-for-export-bin-removal-during-deploy.patch
+
+# CVE-2026-97024
+# https://github.com/flatpak/flatpak/commit/16611913eeed8c418a8d958cb743f3476a01e522
+Patch153:       dir-use-fd-relative-operations-for-files-etc-during-runtime-deploy.patch
 
 BuildRequires:  pkgconfig(appstream-glib)
 BuildRequires:  pkgconfig(dconf)
@@ -357,6 +367,14 @@ fi
 
 
 %changelog
+* Mon Oct 12 2026 Luigi Pavan <lpavan@redhat.com> - 1.12.9-4.6
+- Use fd-relative operations for files/etc during runtime deploy (CVE-2026-97024)
+  Resolves: RHEL-272190
+
+* Fri Oct 09 2026 Luigi Pavan <lpavan@redhat.com> - 1.12.9-4.5
+- Avoid path traversal deletion via deploy export/bin (CVE-2026-97023)
+  Resolves: RHEL-272030
+
 * Thu Oct 08 2026 Luigi Pavan <lpavan@redhat.com> - 1.12.9-4.4
 - Use gsize for OCI delta sizes and harden delta parser (CVE-2026-96280)
   Resolves: RHEL-271518
