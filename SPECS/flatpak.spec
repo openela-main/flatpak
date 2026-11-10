@@ -6,13 +6,14 @@
 %global ostree_version 2020.8
 %global wayland_protocols_version 1.32
 %global wayland_scanner_version 1.15
+%global xdg_portal_version 1.7.0
 
 # Disable parental control for RHEL builds
 %bcond malcontent %[!0%{?rhel}]
 
 Name:           flatpak
-Version:        1.16.0
-Release:        9%{?dist}.6
+Version:        1.18.0
+Release:        1%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -28,119 +29,14 @@ Source1:        flatpak-add-fedora-repos.service
 # with the config from upstream sources.
 Source2:        flatpak.sysusers.conf
 
-# Implement /etc/containers/certs.d for OCI registries
-# https://github.com/flatpak/flatpak/pull/5916
-Patch0:         flatpak-implement-etc-containers-certs-for-oci-registries.patch
-# Allow direct installation from OCI images
-# https://github.com/flatpak/flatpak/pull/5972
-Patch1:         flatpak-allow-direct-installation-from-oci-images.patch
-# Support sideload repositories for OCI remotes
-# https://github.com/owtaylor/flatpak/commits/oci-sideload
-Patch2:         flatpak-support-sideload-repositories-for-oci-remotes.patch
-# Add support for preinstalling flatpaks
-# https://github.com/flatpak/flatpak/pull/6116
-Patch3:         flatpak-add-support-for-preinstalling-flatpaks.patch
-# Enable collection IDs for OCI remotes
-# https://github.com/flatpak/flatpak/pull/6083
-Patch4:         flatpak-enable-collection-ids-for-oci-remotes.patch
-# Fix crash and installatcion of OCI images
-Patch5:         flatpak-pass-token-to-flatpak-image-source-new-remote.patch
 # /etc/pki/entitlement
-Patch6:         flatpak-for-registry.redhat.io-get-certificates-from-etc-pki.patch
+Patch1:         flatpak-for-registry.redhat.io-get-certificates-from-etc-pki.patch
 # Enable FIPS support
-Patch7:         flatpak-run-Enable-FIPS-crypto-policy-if-it-is-enabled-on-th.patch
-# Stop killing the session when stopping background apps
-Patch9:         flatpak-kill-Do-not-kill-pid-0-and-embrace-races.patch
-
-# CVE-2026-34078
-Patch100:       CVE-2026-34078-1-update-subtree-libglnx-2026-04-07.patch
-Patch101:       CVE-2026-34078-2-flatpak-bwrap-add-dup-ing-variant-flatpak-bwrap-add-args-data-fd-dup.patch
-Patch102:       CVE-2026-34078-3-utils-add-flatpak-parse-fd.patch
-Patch103:       CVE-2026-34078-4-flatpak-bwrap-use-glnx-close-fd-as-clear-func.patch
-Patch104:       CVE-2026-34078-5-run-use-o-path-fds-for-the-runtime-and-app-deploy-directories.patch
-Patch105:       CVE-2026-34078-6-run-add-usr-fd-and-app-fd-options.patch
-Patch106:       CVE-2026-34078-7-run-add-ro-bind-fds-to-flatpak-run-app.patch
-Patch107:       CVE-2026-34078-8-run-add-ro-bind-fd-options.patch
-Patch108:       CVE-2026-34078-9-portal-use-bind-fd-app-fd-and-usr-fd-options-to-avoid-races.patch
-Patch109:       CVE-2026-34078-10-run-fix-checking-wrong-variable-in-runtime-fd-selection.patch
-Patch110:       CVE-2026-34078-11-run-mount-original-app-on-run-parent-app-when-using-app-path.patch
-Patch111:       CVE-2026-34078-12-portal-update-max-fd-after-creating-the-instance-id-pipe.patch
-Patch112:       CVE-2026-34078-13-run-fix-fd-tracking-in-flatpak-run-add-app-info-args.patch
-Patch113:       CVE-2026-34078-14-utils-improve-error-message-when-passing-an-fd-numer-which-is-not-a-fd.patch
-Patch114:       CVE-2026-34078-15-run-do-not-close-bind-ro-bind.patch
-Patch115:       CVE-2026-34078-16-run-use-the-same-fd-validation-for-all-fd-options.patch
-Patch116:       CVE-2026-34078-17-run-add-bind-fd-and-ro-bind-fd-binds-after-all-other-binds.patch
-Patch117:       CVE-2026-34078-18-portal-use-g-array-index-to-read-from-expose-fds-expose-fds-ro.patch
-Patch118:       CVE-2026-34078-19-run-fix-backport-mistake.patch
-Patch119:       CVE-2026-34078-20-tests-test-run-custom-test-usr-path-usr-fd-app-path-app-fd.patch
-Patch120:       CVE-2026-34078-21-tests-test-run-custom-test-bind-fd-and-ro-bind-fd.patch
-Patch121:       CVE-2026-34078-22-run-cope-with-an-empty-runtime.patch
-Patch122:       CVE-2026-34078-23-dir-in-apply-extra-data-don-t-assume-there-is-always-a-runtime.patch
-Patch123:       CVE-2026-34078-24-tests-add-test-extra-data-sh-to-test-extra-data-installation.patch
-Patch124:       CVE-2026-34078-25-tests-add-test-for-noruntime-extra-data-app.patch
-Patch125:       CVE-2026-34078-26-utils-add-flatpak-set-cloexec.patch
-Patch126:       CVE-2026-34078-27-run-context-mark-fd-arguments-as-close-on-exec.patch
-Patch127:       CVE-2026-34078-28-utils-move-flatpak-get-path-for-fd-to-here.patch
-Patch128:       CVE-2026-34078-29-portal-avoid-crash-if-sandbox-expose-ro-fd-is-out-of-range.patch
-Patch129:       CVE-2026-34078-30-portal-log-and-ignore-unusable-sandbox-expose-fds-instead-of-erroring.patch
-Patch130:       CVE-2026-34078-31-portal-reinstate-flatpak-get-path-for-fd-checks.patch
-Patch131:       CVE-2026-34078-32-libtest-allow-adding-a-new-ref-to-an-existing-temporary-ostree-repo.patch
-Patch132:       CVE-2026-34078-33-tests-check-that-flatpak-run-fd-arguments-do-not-leak-to-the-command.patch
-Patch133:       CVE-2026-34078-34-app-context-never-close-fds-0-1-or-2.patch
-Patch134:       CVE-2026-34078-35-app-context-factor-out-flatpak-accept-fd-argument.patch
-
-# CVE-2026-34079
-Patch135:       CVE-2026-34079-1-utils-only-remove-cached-files-in-the-cache-directory.patch
-Patch136:       CVE-2026-34079-2-utils-do-not-follow-symlinks-in-local-open-file.patch
-Patch137:       CVE-2026-34079-3-system-helper-only-remove-an-ongoing-pull-if-users-match.patch
-
-# CVE-2026-90616
-Patch138:       chase-add-internal-glnx-chaseat-full-for-a-strategic-callback.patch
-Patch139:       chase-add-glnx-chase-and-mkdirat.patch
-Patch140:       tests-fix-checks-where-we-expect-a-command-to-fail.patch
-Patch141:       CVE-2026-90616-1-run-harden-ensure-data-dir-and-var-setup-against-symlink-attacks.patch
-Patch142:       CVE-2026-90616-2-test-run-check-that-the-way-com-valvesoftware-steam-behaves-still-works.patch
-Patch143:       CVE-2026-90616-3-tests-add-a-regression-test-for-ghsa-8688-9x26-hhxj.patch
-
-# CVE-2026-96808
-# https://github.com/flatpak/flatpak/commit/37fb84ec00005ce3e368f7a5afb9743aedea24a2
-# https://github.com/flatpak/flatpak/commit/4d1eb212237069681b1f994e2b5b61e40015050f
-# https://github.com/flatpak/flatpak/commit/076f77a4775490b2aef43f4e01eeee9aa965bd21
-# https://github.com/flatpak/flatpak/commit/769ad563bae82b948496a7edffa5eb3f71d0cc72
-Patch144:       revokefs-avoid-symlink-path-traversal-out-of-basefd-in-simple-cases.patch
-Patch145:       revokefs-avoid-symlink-path-traversal-in-link-rename.patch
-Patch146:       revokefs-avoid-symlink-path-traversal-in-symlink.patch
-Patch147:       revokefs-avoid-symlink-path-traversal-in-chmod.patch
-
-# CVE-2026-96275
-# https://github.com/flatpak/flatpak/commit/fb8ae524738e0a0097a6d64bfcda71552174b7fb
-# https://github.com/flatpak/flatpak/commit/c0a109aa4f861f557aed60c42d0ee64d2c3a943c
-# https://github.com/flatpak/flatpak/commit/104c7a63bca482155ace642d59d4765f57f4ecaa
-# https://github.com/flatpak/flatpak/commit/c9b4b4946a7fc8d4a79a454a9d70faee5f7af820
-# https://github.com/flatpak/flatpak/commit/de3decabfd2bc62a774698342d1a9e8ea98077d7
-Patch148:       utils-add-flatpak-cp-a-at-a-fd-based-flatpak-cp-a-variant.patch
-Patch149:       utils-make-flatpak-cp-a-a-wrapper-around-flatpak-cp-a-at.patch
-Patch150:       dir-validate-extra-data-name.patch
-Patch151:       dir-use-chaseat-in-extract-extra-data-to-prevent-path-traversal.patch
-Patch152:       dir-use-chaseat-in-apply-extra-data-to-prevent-path-traversal.patch
-
-# CVE-2026-96280
-# https://github.com/flatpak/flatpak/commit/6be548dd3ac780407ff3cc5824eb9d2acb9f406a
-# https://github.com/flatpak/flatpak/commit/592e8c6704d310e3b6418caff52e0cc85271c8e3
-# https://github.com/flatpak/flatpak/commit/a79764d78b29aa592b612061071b2c361bda4f9e
-Patch153:       oci-use-gsize-for-oci-delta-sizes.patch
-Patch154:       oci-avoid-overflow-in-delta-read-data.patch
-Patch155:       oci-limit-delta-path-length-to-path-max.patch
-
-# CVE-2026-97023
-# https://github.com/flatpak/flatpak/commit/3f404693fa04100dff5fc7068506156daff27b33
-# https://github.com/flatpak/flatpak/commit/9454433f70b030d3030a9d22e11e9906a54b1178
-Patch156:       dir-add-fd-relative-helpers-for-accessing-deploy-directories.patch
-Patch157:       dir-use-fd-relative-operations-for-export-bin-removal-during-deploy.patch
-
-# CVE-2026-97024
-# https://github.com/flatpak/flatpak/commit/16611913eeed8c418a8d958cb743f3476a01e522
-Patch158:       dir-use-fd-relative-operations-for-files-etc-during-runtime-deploy.patch
+Patch2:         flatpak-run-Enable-FIPS-crypto-policy-if-it-is-enabled-on-th.patch
+# Retry on 401 with FlatpakTokenProvider (https://github.com/flatpak/flatpak/pull/6662)
+Patch3:         flatpak-oci-Retry-on-401-with-FlatpakTokenProvider.patch
+# Check signatures from mirrored repo in system helper (https://github.com/flatpak/flatpak/pull/6682)
+Patch4:         flatpak-oci-registry-Check-signatures-from-mirrored-repo-in.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -206,9 +102,9 @@ Recommends:     p11-kit-server
 
 # Make sure the document portal is installed
 %if 0%{?fedora} || 0%{?rhel} > 7
-Recommends:     xdg-desktop-portal > 0.10
+Recommends:     xdg-desktop-portal >= %{xdg_portal_version}
 %else
-Requires:       xdg-desktop-portal > 0.10
+Requires:       xdg-desktop-portal >= %{xdg_portal_version}
 %endif
 
 %description
@@ -290,7 +186,11 @@ This package contains installed tests for %{name}.
 %meson_install
 install -pm 644 NEWS README.md %{buildroot}/%{_pkgdocdir}
 # The system repo is not installed by the flatpak build system.
+install -d %{buildroot}%{_datadir}/%{name}/preinstall.d
+install -d %{buildroot}%{_datadir}/%{name}/remotes.d
 install -d %{buildroot}%{_localstatedir}/lib/flatpak
+install -d %{buildroot}%{_sysconfdir}/%{name}/installations.d
+install -d %{buildroot}%{_sysconfdir}/%{name}/preinstall.d
 install -d %{buildroot}%{_sysconfdir}/flatpak/remotes.d
 
 %if 0%{?fedora}
@@ -344,6 +244,7 @@ fi
 %{_datadir}/dbus-1/interfaces/org.freedesktop.Flatpak.Authenticator.xml
 %{_datadir}/dbus-1/services/org.flatpak.Authenticator.Oci.service
 %{_datadir}/dbus-1/services/org.freedesktop.portal.Flatpak.service
+%{_datadir}/dbus-1/system.d/org.freedesktop.Flatpak.SystemHelper.conf
 %{_datadir}/dbus-1/system-services/org.freedesktop.Flatpak.SystemHelper.service
 %{_datadir}/fish/
 %{_datadir}/%{name}
@@ -364,8 +265,9 @@ fi
 %{_mandir}/man5/flatpak-remote.5*
 %{_mandir}/man5/flatpakref.5*
 %{_mandir}/man5/flatpakrepo.5*
-%{_sysconfdir}/dbus-1/system.d/org.freedesktop.Flatpak.SystemHelper.conf
 %dir %{_sysconfdir}/flatpak
+%{_sysconfdir}/%{name}/installations.d
+%{_sysconfdir}/%{name}/preinstall.d
 %{_sysconfdir}/flatpak/remotes.d
 %{_sysconfdir}/profile.d/flatpak.csh
 %{_sysconfdir}/profile.d/flatpak.sh
@@ -395,7 +297,7 @@ fi
 
 %files selinux
 %{_datadir}/selinux/packages/flatpak.pp.bz2
-%{_datadir}/selinux/devel/include/contrib/flatpak.if
+%{_datadir}/selinux/devel/include/distributed/flatpak.if
 
 %files session-helper
 %license COPYING
@@ -410,35 +312,20 @@ fi
 
 
 %changelog
-* Mon Oct 12 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.6
-- Use fd-relative operations for files/etc during runtime deploy (CVE-2026-97024)
-  Resolves: RHEL-272185
+* Thu Jun 11 2026 Jan Grulich <jgrulich@redhat.com> - 1.18.0-1
+- Update to 1.18.0
+  Resolves: RHEL-126038
+  Resolves: RHEL-92123
+  Resolves: RHEL-165631
+  Resolves: RHEL-170158
 
-* Fri Oct 09 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.5
-- Avoid path traversal deletion via deploy export/bin (CVE-2026-97023)
-  Resolves: RHEL-272031
+* Tue Mar 17 2026 Jan Grulich <jgrulich@redhat.com> - 1.17.3-1
+- 1.17.3
+  Resolves: RHEL-126038
 
-* Mon Oct 05 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.4
-- Avoid symlink path traversal in revokefs writer (CVE-2026-96808)
-  Resolves: RHEL-267891
-- Prevent arbitrary write as root via extra-data extraction (CVE-2026-96275)
-  Resolves: RHEL-267432
-- Use gsize for OCI delta sizes and harden delta parser (CVE-2026-96280)
-  Resolves: RHEL-271519
-
-* Fri Oct 02 2026 Luigi Pavan <lpavan@redhat.com> - 1.16.0-9.3
-- Align backport with the other branches
-  Resolves: RHEL-258970
-
-* Mon Sep 14 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 1.16.0-9.2
-- Harden data dir and var setup against symlink attacks
-  Resolves: RHEL-258970
-
-* Mon May 18 2026 Jan Grulich <jgrulich@redhat.com> - 1.16.0-9.1
-- Fix arbitrary code execution via crafted symlinks in sandbox-expose options
-  Resolves: RHEL-165630
-- Fix arbitrary file deletion on host via improper cache file path validation
-  Resolves: RHEL-170157
+* Thu Mar 12 2026 Jan Grulich <jgrulich@redhat.com> - 1.17.2-1
+- Update to 1.17.2
+  Resolves: RHEL-126038
 
 * Tue Jan 13 2026 Sebastian Wick <sebastian.wick@redhat.com> - 1.16.0-9
 - kill: Do not kill pid 0 and embrace races

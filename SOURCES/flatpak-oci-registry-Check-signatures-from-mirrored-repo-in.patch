@@ -1,0 +1,457 @@
+From d439efe6dd66f623aca58d58ed981520f300113d Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Thu, 11 Jun 2026 17:24:11 +0200
+Subject: [PATCH 1/4] oci-registry: Load the certificates from an ImageSource
+
+---
+ common/flatpak-oci-registry.c | 30 ++++++++++++++++--------------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 3a3fec3d46..0a442cd407 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -2405,23 +2405,28 @@ remote_load_signatures (FlatpakOciRegistry *self,
+ }
+ 
+ static FlatpakOciSignatures *
+-flatpak_oci_registry_load_signatures (FlatpakOciRegistry *self,
+-                                      const char         *oci_repository,
+-                                      const char         *digest,
+-                                      GCancellable       *cancellable,
+-                                      GError            **error)
++load_signatures (FlatpakImageSource  *image_source,
++                 GCancellable        *cancellable,
++                 GError             **error)
+ {
+-  if (self->dfd != -1)
++  FlatpakOciRegistry *registry = flatpak_image_source_get_registry (image_source);
++
++  if (registry->dfd != -1)
+     {
+       g_autoptr(FlatpakOciSignatures) signatures = flatpak_oci_signatures_new ();
+ 
+-      if (!flatpak_oci_signatures_load_from_dfd (signatures, self->dfd, cancellable, error))
++      if (!flatpak_oci_signatures_load_from_dfd (signatures, registry->dfd, cancellable, error))
+         return NULL;
+ 
+       return g_steal_pointer (&signatures);
+     }
+   else
+-    return remote_load_signatures (self, oci_repository, digest, cancellable, error);
++    {
++      const char *oci_repository = flatpak_image_source_get_oci_repository (image_source);
++      const char *digest = flatpak_image_source_get_digest (image_source);
++
++      return remote_load_signatures (registry, oci_repository, digest, cancellable, error);
++    }
+ }
+ 
+ static const char *
+@@ -3283,8 +3288,7 @@ flatpak_mirror_image_from_oci (FlatpakOciRegistry    *dst_registry,
+   if (!flatpak_oci_registry_save_index (dst_registry, index, cancellable, error))
+     return FALSE;
+ 
+-  signatures = flatpak_oci_registry_load_signatures (registry, oci_repository, digest,
+-                                                     cancellable, error);
++  signatures = load_signatures (image_source, cancellable, error);
+   if (!signatures)
+     return FALSE;
+ 
+@@ -3339,10 +3343,8 @@ flatpak_pull_from_oci (OstreeRepo            *repo,
+ 
+   g_assert (g_str_has_prefix (digest, "sha256:"));
+ 
+-  signatures = flatpak_oci_registry_load_signatures (dst_registry,
+-                                                     dest_oci_repository,
+-                                                     digest,
+-                                                     cancellable, error);
++  signatures = load_signatures (opt_dst_image_source ? opt_dst_image_source : image_source,
++                                cancellable, error);
+   if (!signatures)
+     return FALSE;
+ 
+
+From 780916961cb935b74c2fcaeed6e88b30e35d04e1 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Thu, 11 Jun 2026 17:27:47 +0200
+Subject: [PATCH 2/4] oci-registry: Check signatures from mirrored repo in the
+ system helper
+
+In flatpak_pull_from_oci we can be in in the system helper where we pull
+the mirrored OCI image into the system repo. However, to fetch the
+signatures in GPG signed repos, we used a remote OciImageSource created
+through `flatpak_remote_state_fetch_image_source`. This caused fetching
+some data from the registry which we don't want in the deploy method,
+and also fails if a token is required to access the repo.
+
+This change fetches the signatures from the mirrored OCI repo instead of
+pulling them from the remote OciImageSource. The signatures can come from
+anywhere because we verify them against the GPG key in the system repo.
+
+The important bit is the change in `flatpak_pull_from_oci` where we now
+pass in the local image_source to fetch the signatures from, and in the
+system helper, where we get the right metadata to check the signatures
+against (eventually ends up in `flatpak_oci_signatures_verify`).
+---
+ app/flatpak-builtins-build-import-bundle.c |  2 +-
+ common/flatpak-dir.c                       |  2 +-
+ common/flatpak-oci-registry-private.h      |  3 ++-
+ common/flatpak-oci-registry.c              | 16 ++++++-------
+ system-helper/flatpak-system-helper.c      | 28 ++++++++++++++--------
+ 5 files changed, 29 insertions(+), 22 deletions(-)
+
+diff --git a/app/flatpak-builtins-build-import-bundle.c b/app/flatpak-builtins-build-import-bundle.c
+index 6b06073f30..5455bb5348 100644
+--- a/app/flatpak-builtins-build-import-bundle.c
++++ b/app/flatpak-builtins-build-import-bundle.c
+@@ -68,7 +68,7 @@ import_oci (OstreeRepo *repo, GFile *file,
+ 
+   ref = flatpak_image_source_get_ref (image_source);
+ 
+-  commit_checksum = flatpak_pull_from_oci (repo, image_source, NULL, NULL,
++  commit_checksum = flatpak_pull_from_oci (repo, image_source, NULL, NULL, NULL,
+                                            ref, FLATPAK_PULL_FLAGS_NONE,
+                                            NULL, NULL, cancellable, error);
+   if (commit_checksum == NULL)
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index 73118e1127..36d9b4314c 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -6926,7 +6926,7 @@ flatpak_dir_pull_oci (FlatpakDir          *self,
+ 
+   g_info ("Pulling OCI image %s", oci_digest);
+ 
+-  checksum = flatpak_pull_from_oci (repo, image_source, NULL,
++  checksum = flatpak_pull_from_oci (repo, image_source, NULL, NULL,
+                                     state->remote_name, ref, flatpak_flags, oci_pull_progress_cb, progress, cancellable, error);
+ 
+   if (checksum == NULL)
+diff --git a/common/flatpak-oci-registry-private.h b/common/flatpak-oci-registry-private.h
+index ca56eab396..451f770861 100644
+--- a/common/flatpak-oci-registry-private.h
++++ b/common/flatpak-oci-registry-private.h
+@@ -194,7 +194,8 @@ typedef void (*FlatpakOciPullProgress) (guint64  total_size,
+ 
+ char * flatpak_pull_from_oci (OstreeRepo            *repo,
+                               FlatpakImageSource    *image_source,
+-                              FlatpakImageSource    *opt_dst_image_source,
++                              const char            *opt_sigcheck_repository,
++                              const char            *opt_sigcheck_registry_uri,
+                               const char            *remote,
+                               const char            *ref,
+                               FlatpakPullFlags       flags,
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 0a442cd407..07b194e0c8 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -3301,7 +3301,8 @@ flatpak_mirror_image_from_oci (FlatpakOciRegistry    *dst_registry,
+ char *
+ flatpak_pull_from_oci (OstreeRepo            *repo,
+                        FlatpakImageSource    *image_source,
+-                       FlatpakImageSource    *opt_dst_image_source,
++                       const char            *opt_sigcheck_repository,
++                       const char            *opt_sigcheck_registry_uri,
+                        const char            *remote,
+                        const char            *ref,
+                        FlatpakPullFlags       flags,
+@@ -3334,23 +3335,20 @@ flatpak_pull_from_oci (OstreeRepo            *repo,
+   g_autoptr(GVariantBuilder) metadata_builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+   g_autoptr(GVariant) metadata = NULL;
+   g_autoptr(FlatpakOciSignatures) signatures = NULL;
+-  FlatpakOciRegistry *dst_registry = opt_dst_image_source ?
+-    flatpak_image_source_get_registry (opt_dst_image_source) : registry;
+-  const char *dest_oci_repository = opt_dst_image_source ?
+-    flatpak_image_source_get_oci_repository (opt_dst_image_source) : oci_repository;
++  const char *sigcheck_registry_uri = opt_sigcheck_registry_uri ? opt_sigcheck_registry_uri : registry->uri;
++  const char *sigcheck_repository = opt_sigcheck_repository ? opt_sigcheck_repository : oci_repository;
+   int n_layers;
+   int i;
+ 
+   g_assert (g_str_has_prefix (digest, "sha256:"));
+ 
+-  signatures = load_signatures (opt_dst_image_source ? opt_dst_image_source : image_source,
+-                                cancellable, error);
++  signatures = load_signatures (image_source, cancellable, error);
+   if (!signatures)
+     return FALSE;
+ 
+   if (!flatpak_oci_signatures_verify (signatures, repo, remote,
+-                                      dst_registry->uri,
+-                                      dest_oci_repository,
++                                      sigcheck_registry_uri,
++                                      sigcheck_repository,
+                                       digest,
+                                       error))
+     return FALSE;
+diff --git a/system-helper/flatpak-system-helper.c b/system-helper/flatpak-system-helper.c
+index 81c0801628..f6156b70a2 100644
+--- a/system-helper/flatpak-system-helper.c
++++ b/system-helper/flatpak-system-helper.c
+@@ -492,6 +492,9 @@ handle_deploy (FlatpakSystemHelper   *object,
+       const char *verified_digest;
+       g_autofree char *upstream_url = NULL;
+       g_autoptr(FlatpakImageSource) system_image_source = NULL;
++      g_autoptr(GVariant) metadata = NULL;
++      const char *sigcheck_repository = NULL;
++      g_autofree char *sigcheck_registry_uri = NULL;
+ 
+       if (!ostree_repo_remote_get_url (flatpak_dir_get_repo (system),
+                                        arg_origin,
+@@ -546,21 +549,26 @@ handle_deploy (FlatpakSystemHelper   *object,
+           return G_DBUS_METHOD_INVOCATION_HANDLED;
+         }
+ 
+-      system_image_source =
+-        flatpak_remote_state_fetch_image_source (state,
+-                                                 system,
+-                                                 arg_ref,
+-                                                 verified_digest,
+-                                                 NULL,
+-                                                 NULL, &error);
+-      if (!system_image_source)
++      flatpak_remote_state_lookup_ref (state, arg_ref,
++                                       NULL, NULL,
++                                       &metadata,
++                                       NULL, NULL, NULL);
++
++      if (!g_variant_lookup (metadata, "xa.oci-repository", "s", &sigcheck_repository))
++        {
++          g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
++                                                 "Can't get the OCI repository from the summary");
++          return G_DBUS_METHOD_INVOCATION_HANDLED;
++        }
++
++      if (!ostree_repo_remote_get_url (flatpak_dir_get_repo (system), arg_origin, &sigcheck_registry_uri, NULL))
+         {
+           g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+-                                                 "Can't fetch image source: %s", error->message);
++                                                 "Can't get the OCI registry URI");
+           return G_DBUS_METHOD_INVOCATION_HANDLED;
+         }
+ 
+-      checksum = flatpak_pull_from_oci (flatpak_dir_get_repo (system), image_source, system_image_source,
++      checksum = flatpak_pull_from_oci (flatpak_dir_get_repo (system), image_source, sigcheck_repository, sigcheck_registry_uri,
+                                         arg_origin, arg_ref, FLATPAK_PULL_FLAGS_NONE, NULL, NULL, NULL, &error);
+       if (checksum == NULL)
+         {
+
+From ef6554153e801311cf1e76c2ddb5fc1dbcc22121 Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Thu, 11 Jun 2026 12:50:26 +0200
+Subject: [PATCH 3/4] tests/oci-registry: Add bearer token auth support to the
+ mock OCI registry
+
+Add infrastructure for testing OCI installations from auth-protected
+registries. The mock server now supports requiring a bearer token on all
+/v2/ requests, configurable via a new POST /testing-auth/configure admin
+endpoint. The client gains a corresponding 'configure-auth' subcommand.
+
+Assisted-by: Cursor
+---
+ tests/oci-registry-client.py | 17 +++++++++++++++++
+ tests/oci-registry-server.py | 25 +++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/tests/oci-registry-client.py b/tests/oci-registry-client.py
+index 3855af5454..a80fe1973c 100755
+--- a/tests/oci-registry-client.py
++++ b/tests/oci-registry-client.py
+@@ -82,6 +82,19 @@ def run_delete_sig(args):
+         sys.exit(1)
+ 
+ 
++def run_configure_auth(args):
++    params = {"token": args.token}
++    query = urllib.parse.urlencode(params)
++    conn = get_conn(args)
++    path = "/testing-auth/configure?{query}".format(query=query)
++    conn.request("POST", path)
++    response = conn.getresponse()
++    if response.status != 200:
++        print(response.read(), file=sys.stderr)
++        print("Failed: status={}".format(response.status), file=sys.stderr)
++        sys.exit(1)
++
++
+ parser = argparse.ArgumentParser()
+ parser.add_argument("--url", required=True)
+ parser.add_argument("--cacert")
+@@ -114,5 +127,9 @@ def run_delete_sig(args):
+ delete_sig_parser.add_argument("digest")
+ delete_sig_parser.set_defaults(func=run_delete_sig)
+ 
++configure_auth_parser = subparsers.add_parser("configure-auth")
++configure_auth_parser.add_argument("--token", required=True)
++configure_auth_parser.set_defaults(func=run_configure_auth)
++
+ args = parser.parse_args()
+ args.func(args)
+diff --git a/tests/oci-registry-server.py b/tests/oci-registry-server.py
+index 497d7ca011..a890a097b1 100755
+--- a/tests/oci-registry-server.py
++++ b/tests/oci-registry-server.py
+@@ -15,6 +15,8 @@
+ icons = {}
+ signatures = {}
+ 
++required_token = None
++
+ 
+ def get_index():
+     results = []
+@@ -81,6 +83,15 @@ def check_route(self, route):
+ 
+         return True
+ 
++    def check_auth(self):
++        """Return True if auth is not required or the Authorization: Bearer header matches the required token."""
++        if required_token is None:
++            return True
++        auth_header = self.headers.get("Authorization", "")
++        if not auth_header.startswith("Bearer "):
++            return False
++        return auth_header[len("Bearer "):] == required_token
++
+     def do_GET(self):
+         response = 404
+         response_string = b""
+@@ -97,10 +108,18 @@ def get_file_contents(repo_name, type, ref):
+                 return 404, b""
+ 
+         if self.check_route("/v2/@repo_name/blobs/@digest"):
++            if not self.check_auth():
++                self.send_response(401)
++                self.end_headers()
++                return
+             repo_name = self.matches["repo_name"]
+             digest = self.matches["digest"]
+             response, response_string = get_file_contents(repo_name, "blobs", digest)
+         elif self.check_route("/v2/@repo_name/manifests/@ref"):
++            if not self.check_auth():
++                self.send_response(401)
++                self.end_headers()
++                return
+             repo_name = self.matches["repo_name"]
+             ref = self.matches["ref"]
+             response, response_string = get_file_contents(repo_name, "manifests", ref)
+@@ -234,6 +253,12 @@ def do_POST(self):
+             ref = f"{repo_name}@{digest}"
+             sigs = signatures.setdefault(ref, [])
+             sigs.append(signature_bytes)
++            self.send_response(200)
++            self.end_headers()
++        elif self.check_route("/testing-auth/configure"):
++            global required_token
++            required_token = self.query.get("token", [None])[0]
++
+             self.send_response(200)
+             self.end_headers()
+         else:
+
+From 35efa19c2e4f46359ede239057bde3783e50267d Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Thu, 11 Jun 2026 12:50:26 +0200
+Subject: [PATCH 4/4] tests: Add test for installing from an auth-protected OCI
+ registry
+
+Add a regression test that installs from an auth-protected OCI registry.
+The registry requires a bearer token for all /v2/ requests; the client
+authenticates via the mock test authenticator and the installation
+completes successfully. The test runs for both user and system install
+paths.
+
+Assisted-by: Cursor
+---
+ tests/meson.build      |  1 +
+ tests/test-oci-auth.sh | 69 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+)
+ create mode 100755 tests/test-oci-auth.sh
+
+diff --git a/tests/meson.build b/tests/meson.build
+index 43d1493b73..d0b4f29e06 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -396,6 +396,7 @@ tests = {
+     'system,http',
+     'system,https',
+   ]},
++  'oci-auth': {'wrap': ['user', 'system']},
+   'update-remote-configuration': {'wrap': ['newsummary', 'oldsummary']},
+   'override': {},
+   'update-portal': {'wrap': ['user', 'system']},
+diff --git a/tests/test-oci-auth.sh b/tests/test-oci-auth.sh
+new file mode 100755
+index 0000000000..33c2271f09
+--- /dev/null
++++ b/tests/test-oci-auth.sh
+@@ -0,0 +1,69 @@
++#!/bin/bash
++#
++# Copyright (C) 2026 Red Hat, Inc.
++#
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of the GNU Lesser General Public
++# License as published by the Free Software Foundation; either
++# version 2 of the License, or (at your option) any later version.
++#
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library; if not, write to the
++# Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++# Boston, MA 02111-1307, USA.
++
++set -euo pipefail
++
++# shellcheck source=libtest.sh
++. "$(dirname "$0")/libtest.sh"
++
++skip_without_bwrap
++
++echo "1..1"
++
++# Start the fake OCI registry server
++
++httpd oci-registry-server.py --dir=.
++port=$(cat httpd-port)
++
++# shellcheck disable=SC2154
++client="python3 ${test_srcdir}/oci-registry-client.py --url=http://127.0.0.1:${port}"
++
++setup_repo_no_add oci
++
++# Build OCI bundles and upload them to the registry
++
++${FLATPAK} build-bundle --runtime --oci $FL_GPGARGS repos/oci oci/platform-image org.test.Platform >&2
++$client add platform latest "$(pwd)/oci/platform-image"
++
++${FLATPAK} build-bundle --oci $FL_GPGARGS repos/oci oci/app-image org.test.Hello >&2
++$client add hello latest "$(pwd)/oci/app-image"
++
++# Add OCI remote configured to use the mock test authenticator.
++# The default authenticator for OCI remotes is org.flatpak.Authenticator.Oci;
++# we override it to use the mock authenticator that reads its token from
++# $XDG_RUNTIME_DIR/required-token on every call.
++
++${FLATPAK} remote-add ${U} oci-auth-registry "oci+http://127.0.0.1:${port}" \
++    --authenticator-name org.flatpak.Authenticator.test >&2
++
++# Test: install from an auth-protected OCI registry
++#
++# The registry requires a bearer token for all /v2/ requests.  The client
++# authenticates via the mock authenticator and completes the installation
++# successfully.
++
++echo -n "token-1" > "${XDG_RUNTIME_DIR}/required-token"
++$client configure-auth --token token-1
++
++${FLATPAK} ${U} install -y oci-auth-registry org.test.Hello >&2
++
++run org.test.Hello > hello_out
++assert_file_has_content hello_out '^Hello world, from a sandbox$'
++
++ok "install from auth-protected OCI registry"

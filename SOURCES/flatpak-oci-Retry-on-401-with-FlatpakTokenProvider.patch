@@ -1,0 +1,970 @@
+From 7ccc155aa363f389f52c7676b353ad5c9d6dcfc5 Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Thu, 14 May 2026 12:27:57 +0200
+Subject: [PATCH 1/3] oci: Retry on 401 with FlatpakTokenProvider
+
+When a bearer token expires mid-transaction, OCI registry HTTP requests
+fail with 401 Unauthorized, causing the entire transaction to fail. This
+is particularly problematic for long-running transactions where the
+token lifetime is shorter than the total operation time.
+
+Add a token refresh mechanism that allows the OCI registry layer to
+transparently retry a failed HTTP request after obtaining a fresh token
+via a FlatpakTokenProvider object provided by the transaction layer.
+
+FlatpakTokenProvider is a GObject that encapsulates the ability to
+obtain and refresh bearer tokens. It holds references to the transaction
+and the current operation, and its refresh_token method re-invokes
+request_tokens_for_remote() to get a fresh token from the authenticator.
+Its get_token method returns the current token from the operation,
+providing a live view that reflects any refresh.
+
+FlatpakTokenProvider replaces the const char *token parameter on the
+OCI code path functions, while leaving OSTree-only functions unchanged.
+At registry creation points, the provider is set on the registry so it
+can be used for retry on 401.
+
+At the FlatpakOciRegistry level, a token_provider field is added. On
+401, the three HTTP call sites (remote_load_file, download_blob,
+mirror_blob) attempt one token refresh and retry, defensively resetting
+any output streams before the retry.
+---
+ common/flatpak-common-types-private.h |   1 +
+ common/flatpak-dir-private.h          |  43 ++++----
+ common/flatpak-dir.c                  |  80 +++++++-------
+ common/flatpak-image-source-private.h |  10 +-
+ common/flatpak-image-source.c         |  20 ++--
+ common/flatpak-oci-registry-private.h |   2 +
+ common/flatpak-oci-registry.c         | 104 ++++++++++++++++---
+ common/flatpak-transaction.c          | 144 +++++++++++++++++++-------
+ 8 files changed, 288 insertions(+), 116 deletions(-)
+
+diff --git a/common/flatpak-common-types-private.h b/common/flatpak-common-types-private.h
+index cb09d78e6d..49bb8bbeeb 100644
+--- a/common/flatpak-common-types-private.h
++++ b/common/flatpak-common-types-private.h
+@@ -59,5 +59,6 @@ typedef struct _FlatpakImageSource    FlatpakImageSource;
+ typedef struct FlatpakOciRegistry     FlatpakOciRegistry;
+ typedef struct _FlatpakOciManifest    FlatpakOciManifest;
+ typedef struct _FlatpakOciImage       FlatpakOciImage;
++typedef struct _FlatpakTokenProvider  FlatpakTokenProvider;
+ 
+ #endif /* __FLATPAK_COMMON_TYPES_H__ */
+diff --git a/common/flatpak-dir-private.h b/common/flatpak-dir-private.h
+index 9a9f8a12a6..431bb96c1a 100644
+--- a/common/flatpak-dir-private.h
++++ b/common/flatpak-dir-private.h
+@@ -62,6 +62,13 @@ GType flatpak_deploy_get_type (void);
+ 
+ typedef struct _PolkitSubject PolkitSubject;
+ 
++#define FLATPAK_TYPE_TOKEN_PROVIDER flatpak_token_provider_get_type ()
++G_DECLARE_FINAL_TYPE (FlatpakTokenProvider, flatpak_token_provider, FLATPAK, TOKEN_PROVIDER, GObject)
++
++const char *flatpak_token_provider_get_token      (FlatpakTokenProvider *self);
++gboolean    flatpak_token_provider_refresh_token  (FlatpakTokenProvider *self,
++                                                    GCancellable         *cancellable);
++
+ typedef struct
+ {
+   FlatpakDecomposed *ref;
+@@ -160,25 +167,25 @@ gboolean flatpak_remote_state_lookup_sparse_cache (FlatpakRemoteState *self,
+                                                    const char         *ref,
+                                                    VarMetadataRef     *out_metadata,
+                                                    GError            **error);
+-GVariant *flatpak_remote_state_load_ref_commit (FlatpakRemoteState *self,
+-                                                FlatpakDir         *dir,
+-                                                const char         *ref,
+-                                                const char         *opt_commit,
+-                                                const char         *token,
+-                                                char              **out_commit,
+-                                                GCancellable       *cancellable,
+-                                                GError            **error);
++GVariant *flatpak_remote_state_load_ref_commit (FlatpakRemoteState   *self,
++                                                FlatpakDir           *dir,
++                                                const char           *ref,
++                                                const char           *opt_commit,
++                                                FlatpakTokenProvider *token_provider,
++                                                char                **out_commit,
++                                                GCancellable         *cancellable,
++                                                GError              **error);
+ void flatpak_remote_state_add_sideload_dir (FlatpakRemoteState *self,
+                                             GFile              *path);
+ void flatpak_remote_state_add_sideload_image_collection (FlatpakRemoteState     *self,
+                                                          FlatpakImageCollection *image_collection);
+-FlatpakImageSource * flatpak_remote_state_fetch_image_source (FlatpakRemoteState  *self,
+-                                                              FlatpakDir          *dir,
+-                                                              const char          *ref,
+-                                                              const char          *opt_rev,
+-                                                              const char          *token,
+-                                                              GCancellable        *cancellable,
+-                                                              GError             **error);
++FlatpakImageSource * flatpak_remote_state_fetch_image_source (FlatpakRemoteState   *self,
++                                                              FlatpakDir           *dir,
++                                                              const char           *ref,
++                                                              const char           *opt_rev,
++                                                              FlatpakTokenProvider *token_provider,
++                                                              GCancellable         *cancellable,
++                                                              GError              **error);
+ 
+ 
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (FlatpakDir, g_object_unref)
+@@ -611,7 +618,7 @@ gboolean              flatpak_dir_pull                                      (Fla
+                                                                              GFile                         *sideload_repo,
+                                                                              FlatpakImageSource            *opt_image_source,
+                                                                              GBytes                        *require_metadata,
+-                                                                             const char                    *token,
++                                                                             FlatpakTokenProvider          *token_provider,
+                                                                              OstreeRepo                    *repo,
+                                                                              FlatpakPullFlags               flatpak_flags,
+                                                                              OstreeRepoPullFlags            flags,
+@@ -735,7 +742,7 @@ gboolean              flatpak_dir_install                                   (Fla
+                                                                              GFile                         *sideload_repo,
+                                                                              FlatpakImageSource            *opt_image_source,
+                                                                              GBytes                        *require_metadata,
+-                                                                             const char                    *token,
++                                                                             FlatpakTokenProvider          *token_provider,
+                                                                              FlatpakProgress               *progress,
+                                                                              GCancellable                  *cancellable,
+                                                                              GError                       **error);
+@@ -783,7 +790,7 @@ gboolean              flatpak_dir_update                                    (Fla
+                                                                              GFile                         *sideload_repo,
+                                                                              FlatpakImageSource            *opt_image_source,
+                                                                              GBytes                        *require_metadata,
+-                                                                             const char                    *token,
++                                                                             FlatpakTokenProvider          *token_provider,
+                                                                              FlatpakProgress               *progress,
+                                                                              GCancellable                  *cancellable,
+                                                                              GError                       **error);
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index 73118e1127..da96153eb1 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -116,7 +116,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC (AutoPolkitSubject, g_object_unref)
+ 
+ static FlatpakOciRegistry *flatpak_dir_create_system_child_oci_registry (FlatpakDir   *self,
+                                                                          GLnxLockFile *file_lock,
+-                                                                         const char   *token,
++                                                                         FlatpakTokenProvider *token_provider,
+                                                                          GError      **error);
+ 
+ static OstreeRepo * flatpak_dir_create_child_repo (FlatpakDir   *self,
+@@ -135,7 +135,7 @@ static gboolean flatpak_dir_mirror_oci (FlatpakDir          *self,
+                                         const char          *ref,
+                                         const char          *opt_rev,
+                                         FlatpakImageSource  *opt_image_source,
+-                                        const char          *token,
++                                        FlatpakTokenProvider *token_provider,
+                                         FlatpakProgress     *progress,
+                                         GCancellable        *cancellable,
+                                         GError             **error);
+@@ -1209,7 +1209,7 @@ flatpak_remote_state_new_image_source (FlatpakRemoteState  *self,
+                                        FlatpakDir          *dir,
+                                        const char          *oci_repository,
+                                        const char          *digest,
+-                                       const char          *token,
++                                       FlatpakTokenProvider *token_provider,
+                                        GCancellable        *cancellable,
+                                        GError             **error)
+ {
+@@ -1229,7 +1229,7 @@ flatpak_remote_state_new_image_source (FlatpakRemoteState  *self,
+   image_source = flatpak_image_source_new_remote (registry_uri,
+                                                   oci_repository,
+                                                   digest,
+-                                                  token,
++                                                  token_provider,
+                                                   signature_lookaside,
+                                                   NULL, error);
+   if (image_source == NULL)
+@@ -1243,7 +1243,7 @@ flatpak_remote_state_fetch_image_source (FlatpakRemoteState *self,
+                                          FlatpakDir         *dir,
+                                          const char         *ref,
+                                          const char         *opt_rev,
+-                                         const char         *token,
++                                         FlatpakTokenProvider *token_provider,
+                                          GCancellable       *cancellable,
+                                          GError            **error)
+ {
+@@ -1277,7 +1277,7 @@ flatpak_remote_state_fetch_image_source (FlatpakRemoteState *self,
+ 
+       oci_digest = g_strconcat ("sha256:", opt_rev ? opt_rev : latest_rev, NULL);
+ 
+-      image_source = flatpak_remote_state_new_image_source (self, dir, oci_repository, oci_digest, token, cancellable, error);
++      image_source = flatpak_remote_state_new_image_source (self, dir, oci_repository, oci_digest, token_provider, cancellable, error);
+       if (image_source == NULL)
+         return NULL;
+ 
+@@ -1302,13 +1302,13 @@ flatpak_remote_state_fetch_commit_object_oci (FlatpakRemoteState *self,
+                                               FlatpakDir   *dir,
+                                               const char   *ref,
+                                               const char   *checksum,
+-                                              const char   *token,
++                                              FlatpakTokenProvider *token_provider,
+                                               GCancellable *cancellable,
+                                               GError      **error)
+ {
+   g_autoptr(FlatpakImageSource) image_source = NULL;
+ 
+-  image_source = flatpak_remote_state_fetch_image_source (self, dir, ref, checksum, token, cancellable, error);
++  image_source = flatpak_remote_state_fetch_image_source (self, dir, ref, checksum, token_provider, cancellable, error);
+   if (image_source == NULL)
+     return NULL;
+ 
+@@ -1430,7 +1430,7 @@ flatpak_remote_state_load_ref_commit (FlatpakRemoteState *self,
+                                       FlatpakDir         *dir,
+                                       const char         *ref,
+                                       const char         *opt_commit,
+-                                      const char         *token,
++                                      FlatpakTokenProvider *token_provider,
+                                       char              **out_commit,
+                                       GCancellable       *cancellable,
+                                       GError            **error)
+@@ -1481,11 +1481,16 @@ flatpak_remote_state_load_ref_commit (FlatpakRemoteState *self,
+     }
+ 
+   if (flatpak_dir_get_remote_oci (dir, self->remote_name))
+-    commit_data = flatpak_remote_state_fetch_commit_object_oci (self, dir, ref, commit, token,
+-                                                                cancellable, error);
++    {
++      commit_data = flatpak_remote_state_fetch_commit_object_oci (self, dir, ref, commit, token_provider,
++                                                                  cancellable, error);
++    }
+   else
+-    commit_data = flatpak_remote_state_fetch_commit_object (self, dir, ref, commit, token,
+-                                                            cancellable, error);
++    {
++      const char *token = token_provider ? flatpak_token_provider_get_token (token_provider) : NULL;
++      commit_data = flatpak_remote_state_fetch_commit_object (self, dir, ref, commit, token,
++                                                              cancellable, error);
++    }
+ 
+ out:
+   if (out_commit)
+@@ -6317,7 +6322,7 @@ flatpak_dir_setup_extra_data (FlatpakDir                           *self,
+                               OstreeRepo                           *repo,
+                               const char                           *ref,
+                               const char                           *rev,
+-                              const char                           *token,
++                              FlatpakTokenProvider                 *token_provider,
+                               FlatpakPullFlags                      flatpak_flags,
+                               FlatpakProgress                      *progress,
+                               GCancellable                         *cancellable,
+@@ -6362,7 +6367,7 @@ flatpak_dir_setup_extra_data (FlatpakDir                           *self,
+           g_autoptr(GVariant) extra_data_sources = NULL;
+ 
+           commitv = flatpak_remote_state_load_ref_commit (state, self, ref, rev,
+-                                                          token, NULL, cancellable, error);
++                                                          token_provider, NULL, cancellable, error);
+           if (commitv == NULL)
+             return FALSE;
+ 
+@@ -6838,7 +6843,7 @@ flatpak_dir_mirror_oci (FlatpakDir          *self,
+                         const char          *ref,
+                         const char          *opt_rev,
+                         FlatpakImageSource  *opt_image_source,
+-                        const char          *token,
++                        FlatpakTokenProvider *token_provider,
+                         FlatpakProgress     *progress,
+                         GCancellable        *cancellable,
+                         GError             **error)
+@@ -6852,7 +6857,7 @@ flatpak_dir_mirror_oci (FlatpakDir          *self,
+   if (!image_source)
+     {
+       image_source = flatpak_remote_state_fetch_image_source (state, self,
+-                                                              ref, opt_rev, token,
++                                                              ref, opt_rev, token_provider,
+                                                               cancellable, error);
+       if (image_source == NULL)
+         return FALSE;
+@@ -6887,7 +6892,7 @@ flatpak_dir_pull_oci (FlatpakDir          *self,
+                       OstreeRepo          *repo,
+                       FlatpakPullFlags     flatpak_flags,
+                       OstreeRepoPullFlags  flags,
+-                      const char          *token,
++                      FlatpakTokenProvider *token_provider,
+                       FlatpakProgress     *progress,
+                       GCancellable        *cancellable,
+                       GError             **error)
+@@ -6907,7 +6912,7 @@ flatpak_dir_pull_oci (FlatpakDir          *self,
+   if (!image_source)
+     {
+       image_source = flatpak_remote_state_fetch_image_source (state, self,
+-                                                              ref, opt_rev, token,
++                                                              ref, opt_rev, token_provider,
+                                                               cancellable, error);
+       if (image_source == NULL)
+         return FALSE;
+@@ -6935,7 +6940,7 @@ flatpak_dir_pull_oci (FlatpakDir          *self,
+   g_info ("Imported OCI image as checksum %s", checksum);
+ 
+   if (!flatpak_dir_setup_extra_data (self, state, repo,
+-                                     ref, checksum, token,
++                                     ref, checksum, token_provider,
+                                      flatpak_flags,
+                                      progress,
+                                      cancellable,
+@@ -6976,7 +6981,7 @@ flatpak_dir_pull (FlatpakDir                           *self,
+                   GFile                                *sideload_repo,
+                   FlatpakImageSource                   *opt_image_source,
+                   GBytes                               *require_metadata,
+-                  const char                           *token,
++                  FlatpakTokenProvider                 *token_provider,
+                   OstreeRepo                           *repo,
+                   FlatpakPullFlags                      flatpak_flags,
+                   OstreeRepoPullFlags                   flags,
+@@ -6992,6 +6997,7 @@ flatpak_dir_pull (FlatpakDir                           *self,
+   g_auto(GLnxLockFile) lock = { 0, };
+   g_autofree char *name = NULL;
+   g_autofree char *current_checksum = NULL;
++  const char *token = token_provider ? flatpak_token_provider_get_token (token_provider) : NULL;
+ 
+   if (!flatpak_dir_ensure_repo (self, cancellable, error))
+     return FALSE;
+@@ -7007,7 +7013,7 @@ flatpak_dir_pull (FlatpakDir                           *self,
+ 
+   if (opt_image_source || flatpak_dir_get_remote_oci (self, state->remote_name))
+     return flatpak_dir_pull_oci (self, state, ref, opt_rev, opt_image_source, repo, flatpak_flags,
+-                                 flags, token, progress, cancellable, error);
++                                 flags, token_provider, progress, cancellable, error);
+ 
+   if (!ostree_repo_remote_get_url (self->repo,
+                                    state->remote_name,
+@@ -7057,7 +7063,7 @@ flatpak_dir_pull (FlatpakDir                           *self,
+   /* Setup extra data information before starting to pull, so we can have precise
+    * progress reports */
+   if (!flatpak_dir_setup_extra_data (self, state, repo,
+-                                     ref, rev, token,
++                                     ref, rev, token_provider,
+                                      flatpak_flags,
+                                      progress,
+                                      cancellable,
+@@ -10483,7 +10489,7 @@ rewrite_dynamic_launchers (FlatpakDecomposed   *ref,
+ static FlatpakOciRegistry *
+ flatpak_dir_create_system_child_oci_registry (FlatpakDir   *self,
+                                               GLnxLockFile *file_lock,
+-                                              const char   *token,
++                                              FlatpakTokenProvider *token_provider,
+                                               GError      **error)
+ {
+   g_autoptr(GFile) cache_dir = NULL;
+@@ -10518,7 +10524,11 @@ flatpak_dir_create_system_child_oci_registry (FlatpakDir   *self,
+   if (new_registry == NULL)
+     return NULL;
+ 
+-  flatpak_oci_registry_set_token (new_registry, token);
++  if (token_provider)
++    {
++      flatpak_oci_registry_set_token (new_registry, flatpak_token_provider_get_token (token_provider));
++      flatpak_oci_registry_set_token_provider (new_registry, token_provider);
++    }
+ 
+   return g_steal_pointer (&new_registry);
+ }
+@@ -10800,7 +10810,7 @@ flatpak_dir_install (FlatpakDir          *self,
+                      GFile               *sideload_repo,
+                      FlatpakImageSource  *opt_image_source,
+                      GBytes              *require_metadata,
+-                     const char          *token,
++                     FlatpakTokenProvider *token_provider,
+                      FlatpakProgress     *progress,
+                      GCancellable        *cancellable,
+                      GError             **error)
+@@ -10855,7 +10865,7 @@ flatpak_dir_install (FlatpakDir          *self,
+           g_autoptr(FlatpakOciRegistry) registry = NULL;
+           g_autoptr(GFile) registry_file = NULL;
+ 
+-          registry = flatpak_dir_create_system_child_oci_registry (self, &child_repo_lock, token, error);
++          registry = flatpak_dir_create_system_child_oci_registry (self, &child_repo_lock, token_provider, error);
+           if (registry == NULL)
+             return FALSE;
+ 
+@@ -10864,7 +10874,7 @@ flatpak_dir_install (FlatpakDir          *self,
+           child_repo_path = g_file_get_path (registry_file);
+ 
+           if (!flatpak_dir_mirror_oci (self, registry, state, flatpak_decomposed_get_ref (ref),
+-                                       opt_commit, opt_image_source, token, progress, cancellable, error))
++                                       opt_commit, opt_image_source, token_provider, progress, cancellable, error))
+             return FALSE;
+         }
+       else if (!gpg_verify_summary || !gpg_verify)
+@@ -10958,7 +10968,7 @@ flatpak_dir_install (FlatpakDir          *self,
+ 
+           flatpak_flags |= FLATPAK_PULL_FLAGS_SIDELOAD_EXTRA_DATA;
+ 
+-          if (!flatpak_dir_pull (self, state, flatpak_decomposed_get_ref (ref), opt_commit, subpaths, sideload_repo, NULL, require_metadata, token,
++          if (!flatpak_dir_pull (self, state, flatpak_decomposed_get_ref (ref), opt_commit, subpaths, sideload_repo, NULL, require_metadata, token_provider,
+                                  child_repo,
+                                  flatpak_flags,
+                                  0,
+@@ -11037,7 +11047,7 @@ flatpak_dir_install (FlatpakDir          *self,
+   if (!no_pull)
+     {
+       if (!flatpak_dir_pull (self, state, flatpak_decomposed_get_ref (ref), opt_commit, opt_subpaths,
+-                             sideload_repo, opt_image_source, require_metadata, token, NULL,
++                             sideload_repo, opt_image_source, require_metadata, token_provider, NULL,
+                              flatpak_flags, OSTREE_REPO_PULL_FLAGS_NONE,
+                              progress, cancellable, error))
+         return FALSE;
+@@ -11512,7 +11522,7 @@ flatpak_dir_update (FlatpakDir                           *self,
+                     GFile                                *sideload_repo,
+                     FlatpakImageSource                   *opt_image_source,
+                     GBytes                               *require_metadata,
+-                    const char                           *token,
++                    FlatpakTokenProvider                 *token_provider,
+                     FlatpakProgress                      *progress,
+                     GCancellable                         *cancellable,
+                     GError                              **error)
+@@ -11589,7 +11599,7 @@ flatpak_dir_update (FlatpakDir                           *self,
+           g_autoptr(FlatpakOciRegistry) registry = NULL;
+           g_autoptr(GFile) registry_file = NULL;
+ 
+-          registry = flatpak_dir_create_system_child_oci_registry (self, &child_repo_lock, token, error);
++          registry = flatpak_dir_create_system_child_oci_registry (self, &child_repo_lock, token_provider, error);
+           if (registry == NULL)
+             return FALSE;
+ 
+@@ -11598,7 +11608,7 @@ flatpak_dir_update (FlatpakDir                           *self,
+           child_repo_path = g_file_get_path (registry_file);
+ 
+           if (!flatpak_dir_mirror_oci (self, registry, state, flatpak_decomposed_get_ref (ref),
+-                                       commit, opt_image_source, token, progress, cancellable, error))
++                                       commit, opt_image_source, token_provider, progress, cancellable, error))
+             return FALSE;
+         }
+       else if (!gpg_verify_summary || !gpg_verify)
+@@ -11678,7 +11688,7 @@ flatpak_dir_update (FlatpakDir                           *self,
+ 
+           flatpak_flags |= FLATPAK_PULL_FLAGS_SIDELOAD_EXTRA_DATA;
+           if (!flatpak_dir_pull (self, state, flatpak_decomposed_get_ref (ref),
+-                                 commit, subpaths, sideload_repo, NULL, require_metadata, token,
++                                 commit, subpaths, sideload_repo, NULL, require_metadata, token_provider,
+                                  child_repo,
+                                  flatpak_flags, 0,
+                                  progress, cancellable, error))
+@@ -11744,7 +11754,7 @@ flatpak_dir_update (FlatpakDir                           *self,
+   if (!no_pull)
+     {
+       if (!flatpak_dir_pull (self, state, flatpak_decomposed_get_ref (ref),
+-                             commit, subpaths, sideload_repo, opt_image_source, require_metadata, token,
++                             commit, subpaths, sideload_repo, opt_image_source, require_metadata, token_provider,
+                              NULL, flatpak_flags, OSTREE_REPO_PULL_FLAGS_NONE,
+                              progress, cancellable, error))
+         return FALSE;
+diff --git a/common/flatpak-image-source-private.h b/common/flatpak-image-source-private.h
+index 1259c1348d..92f6ea7df2 100644
+--- a/common/flatpak-image-source-private.h
++++ b/common/flatpak-image-source-private.h
+@@ -42,11 +42,11 @@ FlatpakImageSource *flatpak_image_source_new_local (GFile        *file,
+                                                     const char   *reference,
+                                                     GCancellable *cancellable,
+                                                     GError      **error);
+-FlatpakImageSource *flatpak_image_source_new_remote (const char   *uri,
+-                                                     const char   *oci_repository,
+-                                                     const char   *digest,
+-                                                     const char   *token,
+-                                                     const char   *signature_lookaside,
++FlatpakImageSource *flatpak_image_source_new_remote (const char           *uri,
++                                                     const char           *oci_repository,
++                                                     const char           *digest,
++                                                     FlatpakTokenProvider *token_provider,
++                                                     const char           *signature_lookaside,
+                                                      GCancellable *cancellable,
+                                                      GError      **error);
+ FlatpakImageSource *flatpak_image_source_new_for_location (const char   *location,
+diff --git a/common/flatpak-image-source.c b/common/flatpak-image-source.c
+index eab92a1b8e..adb81947a1 100644
+--- a/common/flatpak-image-source.c
++++ b/common/flatpak-image-source.c
+@@ -180,13 +180,13 @@ flatpak_image_source_new_local (GFile        *file,
+ }
+ 
+ FlatpakImageSource *
+-flatpak_image_source_new_remote (const char   *uri,
+-                                 const char   *oci_repository,
+-                                 const char   *digest,
+-                                 const char   *token,
+-                                 const char   *signature_lookaside,
+-                                 GCancellable *cancellable,
+-                                 GError      **error)
++flatpak_image_source_new_remote (const char           *uri,
++                                 const char           *oci_repository,
++                                 const char           *digest,
++                                 FlatpakTokenProvider *token_provider,
++                                 const char           *signature_lookaside,
++                                 GCancellable         *cancellable,
++                                 GError              **error)
+ {
+   g_autoptr(FlatpakOciRegistry) registry = NULL;
+ 
+@@ -194,7 +194,11 @@ flatpak_image_source_new_remote (const char   *uri,
+   if (!registry)
+     return NULL;
+ 
+-  flatpak_oci_registry_set_token (registry, token);
++  if (token_provider)
++    {
++      flatpak_oci_registry_set_token (registry, flatpak_token_provider_get_token (token_provider));
++      flatpak_oci_registry_set_token_provider (registry, token_provider);
++    }
+   flatpak_oci_registry_set_signature_lookaside (registry, signature_lookaside);
+ 
+   return flatpak_image_source_new (registry, oci_repository, digest, cancellable, error);
+diff --git a/common/flatpak-oci-registry-private.h b/common/flatpak-oci-registry-private.h
+index ca56eab396..2fc75bc2c8 100644
+--- a/common/flatpak-oci-registry-private.h
++++ b/common/flatpak-oci-registry-private.h
+@@ -61,6 +61,8 @@ FlatpakOciRegistry *   flatpak_oci_registry_new_for_archive (GFile        *archi
+                                                              GError      **error);
+ void                   flatpak_oci_registry_set_token (FlatpakOciRegistry *self,
+                                                        const char *token);
++void                   flatpak_oci_registry_set_token_provider (FlatpakOciRegistry   *self,
++                                                               FlatpakTokenProvider  *provider);
+ void                   flatpak_oci_registry_set_signature_lookaside (FlatpakOciRegistry *self,
+                                                                      const char         *signature_lookaside);
+ gboolean               flatpak_oci_registry_is_local (FlatpakOciRegistry *self);
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 3a3fec3d46..429c32d244 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -74,6 +74,7 @@ struct FlatpakOciRegistry
+   GFile   *archive;
+   int      tmp_dfd;
+   char    *token;
++  FlatpakTokenProvider *token_provider;
+   char    *signature_lookaside;
+ 
+   /* Local repos */
+@@ -138,6 +139,7 @@ flatpak_oci_registry_finalize (GObject *object)
+   g_clear_pointer (&self->base_uri, g_uri_unref);
+   g_clear_pointer (&self->uri, g_free);
+   g_clear_pointer (&self->token, g_free);
++  g_clear_object (&self->token_provider);
+   g_clear_object (&self->archive);
+   g_clear_pointer (&self->tmp_dir, glnx_tmpdir_free);
+   g_clear_pointer (&self->certificates, flatpak_certificates_free);
+@@ -291,6 +293,29 @@ flatpak_oci_registry_set_token (FlatpakOciRegistry *self,
+                                          0, NULL, NULL);
+ }
+ 
++void
++flatpak_oci_registry_set_token_provider (FlatpakOciRegistry   *self,
++                                         FlatpakTokenProvider  *provider)
++{
++  g_set_object (&self->token_provider, provider);
++}
++
++static gboolean
++flatpak_oci_registry_try_refresh_token (FlatpakOciRegistry *self,
++                                        GCancellable       *cancellable)
++{
++  if (self->token_provider == NULL)
++    return FALSE;
++
++  g_info ("Refreshing registry token for %s", self->uri);
++
++  if (!flatpak_token_provider_refresh_token (self->token_provider, cancellable))
++    return FALSE;
++
++  flatpak_oci_registry_set_token (self, flatpak_token_provider_get_token (self->token_provider));
++  return TRUE;
++}
++
+ void
+ flatpak_oci_registry_set_signature_lookaside (FlatpakOciRegistry *self,
+                                               const char         *signature_lookaside)
+@@ -384,6 +409,18 @@ remote_load_file (FlatpakOciRegistry *self,
+                                  NULL, self->token,
+                                  NULL, NULL, NULL, out_content_type, NULL,
+                                  cancellable, error);
++  if (bytes == NULL
++      && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
++      && flatpak_oci_registry_try_refresh_token (self, cancellable))
++    {
++      g_clear_error (error);
++      bytes = flatpak_load_uri_full (self->http_session,
++                                     uri_s, self->certificates, FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
++                                     NULL, self->token,
++                                     NULL, NULL, NULL, out_content_type, NULL,
++                                     cancellable, error);
++    }
++
+   if (bytes == NULL)
+     return NULL;
+ 
+@@ -1016,13 +1053,34 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
+       if (fd == -1)
+         return -1;
+ 
+-      if (!flatpak_download_http_uri (self->http_session, uri_s,
+-                                      self->certificates,
+-                                      FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
+-                                      out_stream,
+-                                      self->token,
+-                                      progress_cb, user_data,
+-                                      cancellable, error))
++      gboolean download_ok;
++
++      download_ok = flatpak_download_http_uri (self->http_session, uri_s,
++                                               self->certificates,
++                                               FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
++                                               out_stream,
++                                               self->token,
++                                               progress_cb, user_data,
++                                               cancellable, error);
++      if (!download_ok
++          && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
++          && flatpak_oci_registry_try_refresh_token (self, cancellable))
++        {
++          g_clear_error (error);
++          g_clear_object (&out_stream);
++          ftruncate (fd, 0);
++          lseek (fd, 0, SEEK_SET);
++          out_stream = g_unix_output_stream_new (fd, FALSE);
++
++          download_ok = flatpak_download_http_uri (self->http_session, uri_s,
++                                                   self->certificates,
++                                                   FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
++                                                   out_stream,
++                                                   self->token,
++                                                   progress_cb, user_data,
++                                                   cancellable, error);
++        }
++      if (!download_ok)
+         return -1;
+ 
+       if (!g_output_stream_close (out_stream, cancellable, error))
+@@ -1107,14 +1165,34 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
+       if (uri_s == NULL)
+         return FALSE;
+ 
++      gboolean download_ok;
++
+       out_stream = g_unix_output_stream_new (tmpf.fd, FALSE);
+ 
+-      if (!flatpak_download_http_uri (source_registry->http_session,
+-                                      uri_s, source_registry->certificates,
+-                                      FLATPAK_HTTP_FLAGS_ACCEPT_OCI, out_stream,
+-                                      self->token,
+-                                      progress_cb, user_data,
+-                                      cancellable, error))
++      download_ok = flatpak_download_http_uri (source_registry->http_session,
++                                               uri_s, source_registry->certificates,
++                                               FLATPAK_HTTP_FLAGS_ACCEPT_OCI, out_stream,
++                                               self->token,
++                                               progress_cb, user_data,
++                                               cancellable, error);
++      if (!download_ok
++          && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
++          && flatpak_oci_registry_try_refresh_token (self, cancellable))
++        {
++          g_clear_error (error);
++          g_clear_object (&out_stream);
++          ftruncate (tmpf.fd, 0);
++          lseek (tmpf.fd, 0, SEEK_SET);
++          out_stream = g_unix_output_stream_new (tmpf.fd, FALSE);
++
++          download_ok = flatpak_download_http_uri (source_registry->http_session,
++                                                   uri_s, source_registry->certificates,
++                                                   FLATPAK_HTTP_FLAGS_ACCEPT_OCI, out_stream,
++                                                   self->token,
++                                                   progress_cb, user_data,
++                                                   cancellable, error);
++        }
++      if (!download_ok)
+         return FALSE;
+ 
+       if (!g_output_stream_close (out_stream, cancellable, error))
+diff --git a/common/flatpak-transaction.c b/common/flatpak-transaction.c
+index 5d1460ce60..cc17d58786 100644
+--- a/common/flatpak-transaction.c
++++ b/common/flatpak-transaction.c
+@@ -164,6 +164,25 @@ typedef struct {
+   GVariant *results;
+ } RequestData;
+ 
++/* Pointers are not ref'd; the provider never outlives the transaction or op. */
++struct _FlatpakTokenProvider {
++  GObject                      parent;
++  FlatpakTransaction          *transaction;
++  FlatpakTransactionOperation *op;
++};
++
++G_DEFINE_TYPE (FlatpakTokenProvider, flatpak_token_provider, G_TYPE_OBJECT)
++
++static void
++flatpak_token_provider_class_init (FlatpakTokenProviderClass *klass)
++{
++}
++
++static void
++flatpak_token_provider_init (FlatpakTokenProvider *self)
++{
++}
++
+ typedef struct _FlatpakTransactionPrivate
+ {
+   GObject                      parent;
+@@ -244,6 +263,8 @@ enum {
+ };
+ 
+ static gboolean op_may_need_token (FlatpakTransactionOperation *op);
++static FlatpakTokenProvider *flatpak_token_provider_new_for_op (FlatpakTransaction          *transaction,
++                                                                FlatpakTransactionOperation *op);
+ 
+ static void flatpak_transaction_normalize_ops (FlatpakTransaction *self);
+ static gboolean request_required_tokens (FlatpakTransaction *self,
+@@ -3910,9 +3931,12 @@ resolve_ops (FlatpakTransaction *self,
+                 flatpak_remote_state_lookup_ref (state, flatpak_decomposed_get_ref (op->ref),
+                                                   NULL, NULL, &op->summary_metadata, NULL, NULL, NULL);
+ 
++              g_autoptr(FlatpakTokenProvider) token_provider =
++                  flatpak_token_provider_new_for_op (self, op);
++
+               commit_data = flatpak_remote_state_load_ref_commit (state, priv->dir,
+                                                                   flatpak_decomposed_get_ref (op->ref),
+-                                                                  checksum, /* initially NULL */ op->resolved_token,
++                                                                  checksum, token_provider,
+                                                                   NULL, NULL, &local_error);
+               if (commit_data == NULL)
+                 {
+@@ -4351,6 +4375,7 @@ request_tokens_for_remote (FlatpakTransaction *self,
+ 
+       /* Allow sending empty tokens to mean no token needed */
+ 
++      g_free (op->resolved_token);
+       op->resolved_token = *token == 0 ? NULL : g_strdup (token);
+       op->requested_token = TRUE;
+     }
+@@ -4358,6 +4383,41 @@ request_tokens_for_remote (FlatpakTransaction *self,
+   return TRUE;
+ }
+ 
++static FlatpakTokenProvider *
++flatpak_token_provider_new_for_op (FlatpakTransaction          *transaction,
++                                   FlatpakTransactionOperation *op)
++{
++  FlatpakTokenProvider *self = g_object_new (FLATPAK_TYPE_TOKEN_PROVIDER, NULL);
++
++  self->transaction = transaction;
++  self->op = op;
++
++  return self;
++}
++
++const char *
++flatpak_token_provider_get_token (FlatpakTokenProvider *self)
++{
++  return self->op->resolved_token;
++}
++
++gboolean
++flatpak_token_provider_refresh_token (FlatpakTokenProvider *self,
++                                      GCancellable         *cancellable)
++{
++  GList op_list = { .data = self->op, .next = NULL, .prev = NULL };
++  g_autoptr(GError) local_error = NULL;
++
++  if (!request_tokens_for_remote (self->transaction, self->op->remote,
++                                  &op_list, cancellable, &local_error))
++    {
++      g_info ("Token refresh failed: %s", local_error->message);
++      return FALSE;
++    }
++
++  return TRUE;
++}
++
+ static gboolean
+ request_required_tokens (FlatpakTransaction *self,
+                          const char         *optional_remote, /* else all remotes */
+@@ -5093,24 +5153,29 @@ _run_op_kind (FlatpakTransaction           *self,
+                                                                    op->resolved_metakey, &local_error))
+         res = FALSE;
+       else
+-        res = flatpak_dir_install (priv->dir,
+-                                   priv->no_pull,
+-                                   priv->no_deploy,
+-                                   priv->disable_static_deltas,
+-                                   priv->reinstall,
+-                                   priv->max_op >= APP_UPDATE,
+-                                   op->pin_on_deploy,
+-                                   op->update_preinstalled_on_deploy,
+-                                   remote_state, op->ref,
+-                                   op->resolved_commit,
+-                                   (const char **) op->subpaths,
+-                                   (const char **) op->previous_ids,
+-                                   op->resolved_sideload_path,
+-                                   op->resolved_image_source,
+-                                   op->resolved_metadata,
+-                                   op->resolved_token,
+-                                   progress->progress_obj,
+-                                   cancellable, &local_error);
++        {
++          g_autoptr(FlatpakTokenProvider) token_provider =
++              flatpak_token_provider_new_for_op (self, op);
++
++          res = flatpak_dir_install (priv->dir,
++                                     priv->no_pull,
++                                     priv->no_deploy,
++                                     priv->disable_static_deltas,
++                                     priv->reinstall,
++                                     priv->max_op >= APP_UPDATE,
++                                     op->pin_on_deploy,
++                                     op->update_preinstalled_on_deploy,
++                                     remote_state, op->ref,
++                                     op->resolved_commit,
++                                     (const char **) op->subpaths,
++                                     (const char **) op->previous_ids,
++                                     op->resolved_sideload_path,
++                                     op->resolved_image_source,
++                                     op->resolved_metadata,
++                                     token_provider,
++                                     progress->progress_obj,
++                                     cancellable, &local_error);
++        }
+ 
+       flatpak_transaction_progress_done (progress);
+ 
+@@ -5167,24 +5232,29 @@ _run_op_kind (FlatpakTransaction           *self,
+                                              (const char **) op->previous_ids,
+                                              cancellable, &local_error);
+           else
+-            res = flatpak_dir_update (priv->dir,
+-                                      priv->no_pull,
+-                                      priv->no_deploy,
+-                                      priv->disable_static_deltas,
+-                                      op->commit != NULL, /* Allow downgrade if we specify commit */
+-                                      priv->max_op >= APP_UPDATE,
+-                                      priv->max_op == APP_INSTALL || priv->max_op == RUNTIME_INSTALL,
+-                                      remote_state,
+-                                      op->ref,
+-                                      op->resolved_commit,
+-                                      (const char **) op->subpaths,
+-                                      (const char **) op->previous_ids,
+-                                      op->resolved_sideload_path,
+-                                      op->resolved_image_source,
+-                                      op->resolved_metadata,
+-                                      op->resolved_token,
+-                                      progress->progress_obj,
+-                                      cancellable, &local_error);
++            {
++              g_autoptr(FlatpakTokenProvider) token_provider =
++                  flatpak_token_provider_new_for_op (self, op);
++
++              res = flatpak_dir_update (priv->dir,
++                                        priv->no_pull,
++                                        priv->no_deploy,
++                                        priv->disable_static_deltas,
++                                        op->commit != NULL, /* Allow downgrade if we specify commit */
++                                        priv->max_op >= APP_UPDATE,
++                                        priv->max_op == APP_INSTALL || priv->max_op == RUNTIME_INSTALL,
++                                        remote_state,
++                                        op->ref,
++                                        op->resolved_commit,
++                                        (const char **) op->subpaths,
++                                        (const char **) op->previous_ids,
++                                        op->resolved_sideload_path,
++                                        op->resolved_image_source,
++                                        op->resolved_metadata,
++                                        token_provider,
++                                        progress->progress_obj,
++                                        cancellable, &local_error);
++            }
+           flatpak_transaction_progress_done (progress);
+ 
+           /* Handle noop-updates */
+
+From 4ae3855f058d4aeed6f50298268d40dcb0c75375 Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Tue, 19 May 2026 11:55:00 +0200
+Subject: [PATCH 2/3] oci: Fix crash when error parameter is NULL in 401 retry
+ logic
+
+The 401 retry logic added in the previous commit dereferences the
+GError **error parameter with *error without first checking that error
+is non-NULL. When callers pass NULL for error (e.g. the _deltaindex
+lookup), this causes a SIGSEGV.
+
+Add error != NULL guards to all three retry sites in remote_load_file,
+flatpak_oci_registry_download_blob, and flatpak_oci_registry_mirror_blob.
+---
+ common/flatpak-oci-registry.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 429c32d244..5ff45995f4 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -410,6 +410,7 @@ remote_load_file (FlatpakOciRegistry *self,
+                                  NULL, NULL, NULL, out_content_type, NULL,
+                                  cancellable, error);
+   if (bytes == NULL
++      && error != NULL
+       && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
+       && flatpak_oci_registry_try_refresh_token (self, cancellable))
+     {
+@@ -1063,6 +1064,7 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
+                                                progress_cb, user_data,
+                                                cancellable, error);
+       if (!download_ok
++          && error != NULL
+           && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
+           && flatpak_oci_registry_try_refresh_token (self, cancellable))
+         {
+@@ -1176,6 +1178,7 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
+                                                progress_cb, user_data,
+                                                cancellable, error);
+       if (!download_ok
++          && error != NULL
+           && g_error_matches (*error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_UNAUTHORIZED)
+           && flatpak_oci_registry_try_refresh_token (self, cancellable))
+         {
+
+From 7fc7350f6d1e24abef3e18cf6da792e28751c746 Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Mon, 8 Jun 2026 18:55:15 +0200
+Subject: [PATCH 3/3] oci: Fix download_blob 401 retry writing to O_RDONLY fd
+
+The retry path after a 401 discarded the O_WRONLY out_stream and
+wrapped the O_RDONLY fd as a new write stream.  ftruncate() silently
+failed on the read-only descriptor and subsequent writes returned
+EBADF, leaving the temp file empty.  checksum_fd() then computed the
+SHA-256 of zero bytes, causing a digest mismatch and a failed install.
+
+Fix by using g_unix_output_stream_get_fd() to reach the O_WRONLY fd,
+resetting it in place, and reusing the existing stream.  Apply the
+same truncate-and-seek pattern to mirror_blob, where the stream
+destroy-and-recreate roundtrip was unnecessary.
+---
+ common/flatpak-oci-registry.c | 9 +++------
+ 1 file changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 5ff45995f4..10d96049b5 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -1069,10 +1069,9 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
+           && flatpak_oci_registry_try_refresh_token (self, cancellable))
+         {
+           g_clear_error (error);
+-          g_clear_object (&out_stream);
+-          ftruncate (fd, 0);
+-          lseek (fd, 0, SEEK_SET);
+-          out_stream = g_unix_output_stream_new (fd, FALSE);
++          int write_fd = g_unix_output_stream_get_fd (G_UNIX_OUTPUT_STREAM (out_stream));
++          ftruncate (write_fd, 0);
++          lseek (write_fd, 0, SEEK_SET);
+ 
+           download_ok = flatpak_download_http_uri (self->http_session, uri_s,
+                                                    self->certificates,
+@@ -1183,10 +1182,8 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
+           && flatpak_oci_registry_try_refresh_token (self, cancellable))
+         {
+           g_clear_error (error);
+-          g_clear_object (&out_stream);
+           ftruncate (tmpf.fd, 0);
+           lseek (tmpf.fd, 0, SEEK_SET);
+-          out_stream = g_unix_output_stream_new (tmpf.fd, FALSE);
+ 
+           download_ok = flatpak_download_http_uri (source_registry->http_session,
+                                                    uri_s, source_registry->certificates,
