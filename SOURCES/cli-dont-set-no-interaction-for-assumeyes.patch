@@ -1,0 +1,187 @@
+From 0717cd168582473418300eee8baaae988e9c0579 Mon Sep 17 00:00:00 2001
+From: Luigi Pavan <lpavan@redhat.com>
+Date: Tue, 28 Jul 2026 16:23:37 +0200
+Subject: [PATCH] cli: Don't set no_interaction for --assumeyes
+
+The --assumeyes (-y) option was setting both the CLI-level
+disable_interaction flag and the library-level no_interaction flag to
+TRUE. This caused -y to suppress not just confirmation prompts, but
+also credential prompts (basic auth, webflow), polkit authorization
+dialogs, and parental control consent -- even though -y is documented
+as "automatically answer yes to all questions".
+
+Rename disable_interaction to assume_yes to clarify its purpose: it
+auto-answers yes/no confirmations and picks default choices. Stop
+calling flatpak_transaction_set_no_interaction() from the CLI
+transaction constructor, so the library-level no_interaction flag is
+only set by --noninteractive (which uses FlatpakQuietTransaction).
+Remove the assume_yes guard from basic_auth_start so credential
+prompts are always shown when the CLI transaction is in use.
+
+Assisted-by: Cursor
+---
+ app/flatpak-cli-transaction.c | 24 ++++++++++--------------
+ app/flatpak-cli-transaction.h |  2 +-
+ tests/test-auth.sh            | 19 ++++++++++++++++++-
+ 3 files changed, 29 insertions(+), 16 deletions(-)
+
+diff --git a/app/flatpak-cli-transaction.c b/app/flatpak-cli-transaction.c
+index 6c3109619..6c91a119d 100644
+--- a/app/flatpak-cli-transaction.c
++++ b/app/flatpak-cli-transaction.c
+@@ -37,7 +37,7 @@ struct _FlatpakCliTransaction
+ {
+   FlatpakTransaction   parent;
+ 
+-  gboolean             disable_interaction;
++  gboolean             assume_yes;
+   gboolean             stop_on_first_error;
+   gboolean             non_default_arch;
+   GError              *first_operation_error;
+@@ -91,7 +91,7 @@ choose_remote_for_ref (FlatpakTransaction *transaction,
+ 
+   self->did_interaction = TRUE;
+ 
+-  if (self->disable_interaction)
++  if (self->assume_yes)
+     {
+       g_print (_("Required runtime for %s (%s) found in remote %s\n"),
+                pref, runtime_ref, remotes[0]);
+@@ -127,7 +127,7 @@ add_new_remote (FlatpakTransaction            *transaction,
+ 
+   self->did_interaction = TRUE;
+ 
+-  if (self->disable_interaction)
++  if (self->assume_yes)
+     {
+       g_print (_("Configuring %s as new remote '%s'\n"), url, remote_name);
+       return TRUE;
+@@ -173,7 +173,7 @@ install_authenticator (FlatpakTransaction            *old_transaction,
+ 
+   old_cli->did_interaction = TRUE;
+ 
+-  transaction2 = flatpak_cli_transaction_new (dir, old_cli->disable_interaction, TRUE, FALSE, &local_error);
++  transaction2 = flatpak_cli_transaction_new (dir, old_cli->assume_yes, TRUE, FALSE, &local_error);
+   if (transaction2 == NULL)
+     {
+       g_printerr ("Unable to install authenticator: %s\n", local_error->message);
+@@ -637,7 +637,7 @@ webflow_start (FlatpakTransaction *transaction,
+ 
+   self->did_interaction = TRUE;
+ 
+-  if (!self->disable_interaction)
++  if (!self->assume_yes)
+     {
+       g_print (_("Authentication required for remote '%s'\n"), remote);
+       if (!flatpak_yes_no_prompt (TRUE, _("Open browser?")))
+@@ -688,9 +688,6 @@ basic_auth_start (FlatpakTransaction *transaction,
+   FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
+   char *user, *password, *previous_error = NULL;
+ 
+-  if (self->disable_interaction)
+-    return FALSE;
+-
+   self->did_interaction = TRUE;
+ 
+   if (g_variant_lookup (options, "previous-error", "&s", &previous_error))
+@@ -980,10 +977,10 @@ end_of_lifed_with_rebase (FlatpakTransaction *transaction,
+       if (rebased_to_ref && remote)
+         {
+           /* The context for this prompt is in print_eol_info_message() */
+-          if (self->disable_interaction ||
++          if (self->assume_yes ||
+               flatpak_yes_no_prompt (TRUE, _("Replace?")))
+             {
+-              if (self->disable_interaction)
++              if (self->assume_yes)
+                 g_print (_("Updating to rebased version\n"));
+ 
+               action = EOL_REBASE;
+@@ -1519,7 +1516,7 @@ transaction_ready_pre_auth (FlatpakTransaction *transaction)
+ 
+   g_print ("\n");
+ 
+-  if (!self->disable_interaction)
++  if (!self->assume_yes)
+     {
+       g_autoptr(FlatpakInstallation) installation = flatpak_transaction_get_installation (transaction);
+       const char *name;
+@@ -1657,7 +1654,7 @@ flatpak_cli_transaction_class_init (FlatpakCliTransactionClass *klass)
+ 
+ FlatpakTransaction *
+ flatpak_cli_transaction_new (FlatpakDir *dir,
+-                             gboolean    disable_interaction,
++                             gboolean    assume_yes,
+                              gboolean    stop_on_first_error,
+                              gboolean    non_default_arch,
+                              GError    **error)
+@@ -1676,11 +1673,10 @@ flatpak_cli_transaction_new (FlatpakDir *dir,
+   if (self == NULL)
+     return NULL;
+ 
+-  self->disable_interaction = disable_interaction;
++  self->assume_yes = assume_yes;
+   self->stop_on_first_error = stop_on_first_error;
+   self->non_default_arch = non_default_arch;
+ 
+-  flatpak_transaction_set_no_interaction (FLATPAK_TRANSACTION (self), disable_interaction);
+   flatpak_transaction_add_default_dependency_sources (FLATPAK_TRANSACTION (self));
+ 
+   return (FlatpakTransaction *) g_steal_pointer (&self);
+diff --git a/app/flatpak-cli-transaction.h b/app/flatpak-cli-transaction.h
+index 43281853b..4175f9bba 100644
+--- a/app/flatpak-cli-transaction.h
++++ b/app/flatpak-cli-transaction.h
+@@ -28,7 +28,7 @@
+ G_DECLARE_FINAL_TYPE (FlatpakCliTransaction, flatpak_cli_transaction, FLATPAK, CLI_TRANSACTION, FlatpakTransaction)
+ 
+ FlatpakTransaction * flatpak_cli_transaction_new (FlatpakDir * dir,
+-                                                  gboolean disable_interaction,
++                                                  gboolean assume_yes,
+                                                   gboolean stop_on_first_error,
+                                                   gboolean non_default_arch,
+                                                   GError **error);
+diff --git a/tests/test-auth.sh b/tests/test-auth.sh
+index 5ab0e4691..825dd0c54 100755
+--- a/tests/test-auth.sh
++++ b/tests/test-auth.sh
+@@ -22,7 +22,7 @@ set -euo pipefail
+ . $(dirname $0)/libtest.sh
+ 
+ 
+-echo "1..3"
++echo "1..4"
+ 
+ setup_repo
+ 
+@@ -90,6 +90,8 @@ assert_file_has_content ${XDG_RUNTIME_DIR}/request "^uri: http://127.0.0.1:${por
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} == xyes ] ; then
+     assert_file_has_content ${XDG_RUNTIME_DIR}/request "^options: .*'collection-id': <'org.test.Collection.test'>"
+ fi
++# -y/--assumeyes should not send no-interaction to the authenticator (only --noninteractive should)
++assert_not_file_has_content ${XDG_RUNTIME_DIR}/request "no-interaction"
+ 
+ EXPORT_ARGS="--token-type=2" make_updated_app test "" master UPDATE2
+ mark_need_token app/org.test.Hello/$ARCH/master the-secret
+@@ -159,3 +161,18 @@ EXPORT_ARGS="--token-type=2" make_updated_app test "" master UPDATE5
+ mark_need_token app/org.test.Hello/$ARCH/master the-secret
+ 
+ ok "update with webflow"
++
++rm -f ${XDG_RUNTIME_DIR}/request-webflow
++rm -f ${XDG_RUNTIME_DIR}/require-webflow
++
++${FLATPAK} ${U} uninstall -y org.test.Hello//master org.test.Hello//copy >&2
++
++EXPORT_ARGS="--token-type=2" make_updated_app test "" master UPDATE6
++mark_need_token app/org.test.Hello/$ARCH/master the-secret
++echo -n the-secret > ${XDG_RUNTIME_DIR}/required-token
++
++${FLATPAK} ${U} install --noninteractive test-repo org.test.Hello master >&2
++
++assert_file_has_content ${XDG_RUNTIME_DIR}/request "no-interaction"
++
++ok "--noninteractive sends no-interaction to the authenticator"
+-- 
+2.52.0
+

@@ -1,0 +1,43 @@
+From eef9aaee0d84138b5b0e440f739bf9504757e5a4 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Fri, 7 Aug 2026 22:59:35 +0200
+Subject: [PATCH] dir: Validate extra-data name in pull_extra_data_to_bytes
+
+Reject extra-data names containing ".", "..", or "/" early during the
+download phase. The name is used to construct a local cache file path
+via flatpak_build_file() which uses g_file_resolve_relative_path(),
+so ".." components could traverse outside the cache directory.
+
+In practice this is not exploitable: the local cache path is only
+used for a g_file_query_exists() check followed by g_file_load_contents(),
+and the loaded content is verified against the expected sha256 from
+the commit metadata.
+
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-fqx6-vh4p-42cg
+---
+ common/flatpak-dir.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index c34a2d73..9bf1e29c 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -6418,10 +6418,13 @@ flatpak_dir_pull_extra_data_to_bytes (FlatpakDir       *self,
+ 
+   expected_sha256 = ostree_checksum_from_bytes (expected_sha256_bytes);
+ 
+-  if (name == NULL || *name == '\0')
++  if (name == NULL || *name == '\0' ||
++      strcmp (name, ".") == 0 ||
++      strcmp (name, "..") == 0 ||
++      strchr (name, '/') != NULL)
+     {
+       return flatpak_fail_error (error, FLATPAK_ERROR_INVALID_DATA,
+-                                 _("Empty name for extra data uri %s"), uri);
++                                 _("Invalid extra data name '%s'"), name);
+     }
+ 
+   /* Don't allow file uris here as that could read local files based on remote data */
+-- 
+2.55.0
+

@@ -13,7 +13,7 @@
 
 Name:           flatpak
 Version:        1.18.0
-Release:        1%{?dist}
+Release:        2%{?dist}.4
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPL-2.1-or-later
@@ -37,6 +37,55 @@ Patch2:         flatpak-run-Enable-FIPS-crypto-policy-if-it-is-enabled-on-th.pat
 Patch3:         flatpak-oci-Retry-on-401-with-FlatpakTokenProvider.patch
 # Check signatures from mirrored repo in system helper (https://github.com/flatpak/flatpak/pull/6682)
 Patch4:         flatpak-oci-registry-Check-signatures-from-mirrored-repo-in.patch
+# Don't set no_interaction for --assumeyes (https://github.com/flatpak/flatpak/pull/6744)
+Patch5:         cli-dont-set-no-interaction-for-assumeyes.patch
+
+# CVE-2026-90616
+Patch6:         chase-add-internal-glnx-chaseat-full-for-a-strategic-callback.patch
+Patch7:         chase-add-glnx-chase-and-mkdirat.patch
+Patch8:         CVE-2026-90616-1-run-harden-ensure-data-dir-and-var-setup-against-symlink-attacks.patch
+Patch9:         CVE-2026-90616-2-test-run-check-that-the-way-com-valvesoftware-steam-behaves-still-works.patch
+Patch10:        CVE-2026-90616-3-tests-add-a-regression-test-for-ghsa-8688-9x26-hhxj.patch
+
+# CVE-2026-96808
+# https://github.com/flatpak/flatpak/commit/a3583bc87d4f86c2794ff879ea56fce95b0b0b5f
+# https://github.com/flatpak/flatpak/commit/b00c7b5073a25bdc34653642de543b5ef6fe0225
+# https://github.com/flatpak/flatpak/commit/4ddb5dc0de1bd25e52627f520a49063d94f79377
+# https://github.com/flatpak/flatpak/commit/e7f96b4d1533f735ace2ea21dbf770e8d4be465a
+Patch11:        revokefs-avoid-symlink-path-traversal-out-of-basefd-in-simple-cases.patch
+Patch12:        revokefs-avoid-symlink-path-traversal-in-link-rename.patch
+Patch13:        revokefs-avoid-symlink-path-traversal-in-symlink.patch
+Patch14:        revokefs-avoid-symlink-path-traversal-in-chmod.patch
+
+# CVE-2026-96275
+# https://github.com/flatpak/flatpak/commit/c42326c74d63e550d874312be0c7a800cf5fc39f
+# https://github.com/flatpak/flatpak/commit/12a30ecb422b1e1246cb2d9af60c14ef7b8f22a4
+# https://github.com/flatpak/flatpak/commit/eef9aaee0d84138b5b0e440f739bf9504757e5a4
+# https://github.com/flatpak/flatpak/commit/4266256cd47e2d9b35da59046bc03f2bd4de3a2a
+# https://github.com/flatpak/flatpak/commit/e8050164eab924d496a42b44c7145fbecf213993
+Patch15:        utils-add-flatpak-cp-a-at-a-fd-based-flatpak-cp-a-variant.patch
+Patch16:        utils-make-flatpak-cp-a-a-wrapper-around-flatpak-cp-a-at.patch
+Patch17:        dir-validate-extra-data-name-in-pull-extra-data-to-bytes.patch
+Patch18:        dir-use-chaseat-in-extract-extra-data-to-prevent-path-traversal.patch
+Patch19:        dir-use-chaseat-in-apply-extra-data-to-prevent-path-traversal.patch
+
+# CVE-2026-96280
+# https://github.com/flatpak/flatpak/commit/892d261255449d0cd5d97f6a8f2a731e566ff913
+# https://github.com/flatpak/flatpak/commit/c52e851f3f5036b132321c19b3c0102aabda9a3a
+# https://github.com/flatpak/flatpak/commit/f710ca12a056678822adf346fed9c2139dd498c7
+Patch20:        oci-use-gsize-for-oci-delta-sizes.patch
+Patch21:        oci-avoid-overflow-in-delta-read-data.patch
+Patch22:        oci-limit-delta-path-length-to-path-max.patch
+
+# CVE-2026-97023
+# https://github.com/flatpak/flatpak/commit/01cd7c4bd70349f44fd76b545374fd996abc948a
+# https://github.com/flatpak/flatpak/commit/40f1265c26fed576235b7a8748371e274b44de1c
+Patch23:        dir-add-fd-relative-helpers-for-accessing-deploy-directories.patch
+Patch24:        dir-use-fd-relative-operations-for-export-bin-removal-during-deploy.patch
+
+# CVE-2026-97024
+# https://github.com/flatpak/flatpak/commit/cc3ab6ab45b9cbca5a360608c51eb336a749d0e8
+Patch25:        dir-use-fd-relative-operations-for-files-etc-during-runtime-deploy.patch
 
 # ostree not on i686 for RHEL 10
 # https://github.com/containers/composefs/pull/229#issuecomment-1838735764
@@ -312,6 +361,30 @@ fi
 
 
 %changelog
+* Mon Oct 12 2026 Luigi Pavan <lpavan@redhat.com> - 1.18.0-2.4
+- Use fd-relative operations for files/etc during runtime deploy (CVE-2026-97024)
+  Resolves: RHEL-272188
+
+* Thu Oct 08 2026 Luigi Pavan <lpavan@redhat.com> - 1.18.0-2.3
+- Avoid path traversal deletion via deploy export/bin (CVE-2026-97023)
+  Resolves: RHEL-272028
+
+* Mon Oct 05 2026 Luigi Pavan <lpavan@redhat.com> - 1.18.0-2.2
+- Avoid symlink path traversal in revokefs writer (CVE-2026-96808)
+  Resolves: RHEL-267893
+- Prevent arbitrary write as root via extra-data extraction (CVE-2026-96275)
+  Resolves: RHEL-267431
+- Use gsize for OCI delta sizes and harden delta parser (CVE-2026-96280)
+  Resolves: RHEL-271514
+
+* Thu Sep 24 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 1.18.0-2.1
+- Harden data dir and var setup against symlink attacks
+  Resolves: RHEL-258968
+
+* Thu Jul 30 2026 Luigi Pavan <lpavan@redhat.com> - 1.18.0-2
+- Don't set no_interaction for --assumeyes
+  Resolves: RHEL-223434
+
 * Thu Jun 11 2026 Jan Grulich <jgrulich@redhat.com> - 1.18.0-1
 - Update to 1.18.0
   Resolves: RHEL-126038
