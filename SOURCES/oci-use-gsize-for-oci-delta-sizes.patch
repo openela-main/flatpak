@@ -1,0 +1,79 @@
+From 6be548dd3ac780407ff3cc5824eb9d2acb9f406a Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Mon, 29 Jun 2026 22:42:30 +0200
+Subject: [PATCH] oci: Use gsize for OCI delta sizes
+
+The delta varint parser decoded into guint64 values which were then
+passed to GLib I/O and allocation functions that take gsize. On 32-bit
+systems where gsize is 32 bits this silently truncated the values.
+
+Change the varint output and all delta operation size parameters to
+gsize, and clamp the parsed value to G_MAXSIZE.
+
+Resolves: https://github.com/flatpak/flatpak/security/advisories/GHSA-jr92-2v97-wgvc
+---
+ common/flatpak-oci-registry.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index 5685314..ef6fef6 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -1688,7 +1688,7 @@ delta_read_byte (GInputStream   *in,
+ 
+ static gboolean
+ delta_read_varuint (GInputStream   *in,
+-                    guint64        *out,
++                    gsize          *out,
+                     GCancellable   *cancellable,
+                     GError        **error)
+ {
+@@ -1712,6 +1712,9 @@ delta_read_varuint (GInputStream   *in,
+     }
+   while (more_data);
+ 
++  if (res > G_MAXSIZE)
++    return flatpak_fail (error, _("Invalid delta file format"));
++
+   *out = res;
+   return TRUE;
+ }
+@@ -1719,7 +1722,7 @@ delta_read_varuint (GInputStream   *in,
+ static gboolean
+ delta_copy_data (GInputStream   *in,
+                  GOutputStream  *out,
+-                 guint64         size,
++                 gsize           size,
+                  guchar         *buffer,
+                  GCancellable   *cancellable,
+                  GError        **error)
+@@ -1747,7 +1750,7 @@ static gboolean
+ delta_add_data (GInputStream   *in1,
+                 GInputStream   *in2,
+                 GOutputStream  *out,
+-                guint64         size,
++                gsize           size,
+                 guchar         *buffer1,
+                 guchar         *buffer2,
+                 GCancellable   *cancellable,
+@@ -1780,7 +1783,7 @@ delta_add_data (GInputStream   *in1,
+ 
+ static guchar *
+ delta_read_data (GInputStream   *in,
+-                 guint64         size,
++                 gsize           size,
+                  GCancellable   *cancellable,
+                  GError        **error)
+ {
+@@ -1881,7 +1884,7 @@ flatpak_oci_registry_apply_delta_stream (FlatpakOciRegistry    *self,
+   while (TRUE)
+     {
+       guint8 op;
+-      guint64 size;
++      gsize size;
+       g_autofree char *path = NULL;
+       g_autofree char *clean_path = NULL;
+       g_autoptr(GError) local_error = NULL;
+-- 
+2.55.0
+

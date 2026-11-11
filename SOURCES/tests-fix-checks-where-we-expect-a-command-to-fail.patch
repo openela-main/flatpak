@@ -1,0 +1,40 @@
+From 68343e938f66051462e0ae3003d0acaca9a76a72 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Tue, 14 Apr 2026 21:16:21 +0200
+Subject: [PATCH] tests: Fix checks where we expect a command to fail
+
+I was convinced that the pattern `! command` with -e aborts when
+`command` fails. This is not the case (the result of `false` is the same
+as `! true` but somehow this doesn't matter).
+
+Fix the tests and use the newly introduced `assert_not` function. One
+could also use `command && assert_not_reached "message"` but who has
+time to write error messages for all the cases.
+
+Backported from upstream commit 68343e938f66051462e0ae3003d0acaca9a76a72:
+* only add assert_fail to tests/libtest.sh; tests/test-run-custom.sh and
+  tests/test-preinstall.sh do not exist in this version
+---
+ tests/libtest.sh | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 5dc4011e..a1b2c3d4 100644
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -272,6 +272,15 @@ assert_remote_has_no_config () {
+     } 3> /dev/null
+ }
+ 
++assert_fail () {
++    if "$@"; then
++        { { local BASH_XTRACEFD=3; } 2> /dev/null
++            echo "Command '$*' should not have succeeded at $(basename ${BASH_SOURCE[1]}):${BASH_LINENO[0]}" >&2
++            exit 1
++        } 3> /dev/null
++    fi
++}
++
+ export FL_GPG_HOMEDIR=${TEST_DATA_DIR}/gpghome
+ export FL_GPG_HOMEDIR2=${TEST_DATA_DIR}/gpghome2
+ mkdir -p ${FL_GPG_HOMEDIR}

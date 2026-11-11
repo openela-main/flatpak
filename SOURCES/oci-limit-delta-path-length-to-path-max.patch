@@ -1,0 +1,69 @@
+From a79764d78b29aa592b612061071b2c361bda4f9e Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Mon, 6 Jul 2026 15:19:16 +0200
+Subject: [PATCH] oci: Limit delta path length to PATH_MAX
+
+The previous commit ensures that there isn't a heap overflow when
+reading a huge delta path, but we should also just reject unreasonably
+long paths. So we chose the arbitrary limit of PATH_MAX and assume that
+anything beyond that arbitrary limit is probably abusive.
+
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-jr92-2v97-wgvc
+---
+ common/flatpak-oci-registry.c | 25 +++++++++++++++----------
+ 1 file changed, 15 insertions(+), 10 deletions(-)
+
+diff --git a/common/flatpak-oci-registry.c b/common/flatpak-oci-registry.c
+index a26ad3a..a69d096 100644
+--- a/common/flatpak-oci-registry.c
++++ b/common/flatpak-oci-registry.c
+@@ -1890,8 +1890,6 @@ flatpak_oci_registry_apply_delta_stream (FlatpakOciRegistry    *self,
+     {
+       guint8 op;
+       gsize size;
+-      g_autofree char *path = NULL;
+-      g_autofree char *clean_path = NULL;
+       g_autoptr(GError) local_error = NULL;
+       gboolean eof;
+ 
+@@ -1914,22 +1912,29 @@ flatpak_oci_registry_apply_delta_stream (FlatpakOciRegistry    *self,
+           break;
+ 
+         case DELTA_OP_OPEN:
+-          path = (char *)delta_read_data (in, size, cancellable, error);
+-          if (path == NULL)
+-            return FALSE;
+-          clean_path = delta_clean_path (path);
+-
+-          g_clear_object (&content_file);
+-
+           {
+-            g_autoptr(GFile) child = g_file_resolve_relative_path (content_dir, clean_path);
++            g_autofree char *path = NULL;
++            g_autofree char *clean_path = NULL;
++            g_autoptr(GFile) child = NULL;
+             g_autoptr(GFileInputStream) child_in = NULL;
+ 
++            if (size > PATH_MAX)
++              return flatpak_fail (error, _("Invalid delta file format"));
++
++            path = (char *) delta_read_data (in, size, cancellable, error);
++            if (path == NULL)
++              return FALSE;
++
++            clean_path = delta_clean_path (path);
++
++            child = g_file_resolve_relative_path (content_dir, clean_path);
++
+             child_in = g_file_read (child, cancellable, error);
+             if (child_in == NULL)
+               return FALSE;
+ 
+             /* We can't seek in the ostree repo file, so copy it to temp file */
++            g_clear_object (&content_file);
+             content_file = copy_stream_to_file (self, G_INPUT_STREAM (child_in), cancellable, error);
+             if (content_file == NULL)
+               return FALSE;
+-- 
+2.55.0
+

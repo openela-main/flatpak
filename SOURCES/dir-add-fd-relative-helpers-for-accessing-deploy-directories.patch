@@ -1,0 +1,159 @@
+From 3f404693fa04100dff5fc7068506156daff27b33 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Tue, 18 Aug 2026 19:05:54 +0200
+Subject: [PATCH] dir: Add fd-relative helpers for accessing deploy directories
+
+Add deploy_open_fd, flatpak_deploy_get_files_fd,
+flatpak_deploy_get_export_fd, and flatpak_deploy_get_metadata_fd which
+open files within a deploy directory using fd-relative operations with
+symlink protection.
+
+deploy_open_fd uses a two-step resolution:
+GLNX_CHASE_RESOLVE_NO_SYMLINKS at the directory boundary (files/,
+export/) to reject symlinks, then GLNX_CHASE_RESOLVE_BENEATH within the
+directory to safely resolve symlinks relative to the directory root.
+
+These will be used by subsequent commits to close TOCTOU gaps where
+GFile path operations were used after fd-based validation.
+
+Prerequsite for fixing CVE-2026-97023, CVE-2026-97024
+
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-5p67-xh8x-rq54
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-8xgq-v545-vgvf
+
+Backport of commit 3f404693fa04100dff5fc7068506156daff27b33.
+
+Adapted for 1.12.9: hunk offsets only; no semantic change.
+---
+ common/flatpak-dir-private.h | 12 +++++
+ common/flatpak-dir.c         | 91 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 103 insertions(+)
+
+diff --git a/common/flatpak-dir-private.h b/common/flatpak-dir-private.h
+index ac229dd..b8b7b85 100644
+--- a/common/flatpak-dir-private.h
++++ b/common/flatpak-dir-private.h
+@@ -448,6 +448,18 @@ GFile *         flatpak_deploy_get_files       (FlatpakDeploy      *deploy);
+ FlatpakContext *flatpak_deploy_get_overrides   (FlatpakDeploy      *deploy);
+ GKeyFile *      flatpak_deploy_get_metadata    (FlatpakDeploy      *deploy);
+ 
++int flatpak_deploy_get_files_fd    (int              deploy_dfd,
++                                    const char      *subpath,
++                                    GlnxChaseFlags   flags,
++                                    GError         **error);
++int flatpak_deploy_get_export_fd   (int              deploy_dfd,
++                                    const char      *subpath,
++                                    GlnxChaseFlags   flags,
++                                    GError         **error);
++int flatpak_deploy_get_metadata_fd (int              deploy_dfd,
++                                    int              access_flags,
++                                    GError         **error);
++
+ FlatpakDir *          flatpak_dir_new                                       (GFile                         *basedir,
+                                                                              gboolean                       user);
+ FlatpakDir *          flatpak_dir_clone                                     (FlatpakDir                    *self);
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index daa97a8..6c45bfd 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -7901,6 +7901,97 @@ extract_extra_data (FlatpakDir   *self,
+   return TRUE;
+ }
+ 
++static int
++deploy_open_fd (int              deploy_dfd,
++                const char      *name,
++                const char      *subpath,
++                GlnxChaseFlags   flags,
++                GError         **error)
++{
++  glnx_autofd int dfd = -1;
++  glnx_autofd int fd = -1;
++
++  g_return_val_if_fail ((flags & ~(GLNX_CHASE_MUST_BE_DIRECTORY |
++                                   GLNX_CHASE_MUST_BE_REGULAR)) == 0, -1);
++
++  if (subpath == NULL)
++    {
++      fd = glnx_chaseat (deploy_dfd, name,
++                         GLNX_CHASE_RESOLVE_NO_SYMLINKS | flags,
++                         error);
++      if (fd < 0)
++        g_prefix_error (error, _("Failed to open %s: "), name);
++
++      return g_steal_fd (&fd);
++    }
++
++  dfd = glnx_chaseat (deploy_dfd, name,
++                      GLNX_CHASE_RESOLVE_NO_SYMLINKS |
++                      GLNX_CHASE_MUST_BE_DIRECTORY,
++                      error);
++  if (dfd < 0)
++    {
++      g_prefix_error (error, _("Failed to open %s: "), name);
++      return -1;
++    }
++
++  /* We cannot use RESOLVE_IN_ROOT because files gets mounted either in
++   * /app or /usr in the real filesystem, making resolution incorrect.
++   * Using RESOLVE_BENEATH gives us support for most symlink setups. */
++  fd = glnx_chaseat (dfd, subpath,
++                     GLNX_CHASE_RESOLVE_BENEATH | flags,
++                     error);
++  if (fd < 0)
++    g_prefix_error (error, _("Failed to open %s/%s: "), name, subpath);
++
++  return g_steal_fd (&fd);
++}
++
++int
++flatpak_deploy_get_files_fd (int              deploy_dfd,
++                             const char      *subpath,
++                             GlnxChaseFlags   flags,
++                             GError         **error)
++{
++  return deploy_open_fd (deploy_dfd, "files", subpath, flags, error);
++}
++
++int
++flatpak_deploy_get_export_fd (int              deploy_dfd,
++                              const char      *subpath,
++                              GlnxChaseFlags   flags,
++                              GError         **error)
++{
++  return deploy_open_fd (deploy_dfd, "export", subpath, flags, error);
++}
++
++int
++flatpak_deploy_get_metadata_fd (int      deploy_dfd,
++                                int      access_flags,
++                                GError **error)
++{
++  glnx_autofd int path_fd = -1;
++  glnx_autofd int fd = -1;
++
++  g_return_val_if_fail ((access_flags & ~(O_RDONLY | O_RDWR)) == 0, -1);
++
++  path_fd = glnx_chaseat (deploy_dfd, "metadata",
++                          GLNX_CHASE_RESOLVE_NO_SYMLINKS |
++                          GLNX_CHASE_MUST_BE_REGULAR,
++                          error);
++  if (path_fd < 0)
++    {
++      g_prefix_error (error, _("Failed to open metadata: "));
++      return -1;
++    }
++
++  fd = glnx_fd_reopen (path_fd, access_flags, error);
++  if (fd < 0)
++    g_prefix_error (error, _("Failed to open metadata: "));
++
++  return g_steal_fd (&fd);
++}
++
+ static void
+ child_setup (gpointer user_data)
+ {
+-- 
+2.55.0
+

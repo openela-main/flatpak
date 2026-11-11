@@ -1,0 +1,90 @@
+From 9454433f70b030d3030a9d22e11e9906a54b1178 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Tue, 11 Aug 2026 23:20:59 +0200
+Subject: [PATCH] dir: Use fd-relative operations for export/bin removal during
+ deploy
+
+The export directory cleanup during deploy used flatpak_rm_rf which
+wraps glnx_shutil_rm_rf_at(AT_FDCWD, path). The kernel resolves
+intermediate symlinks in the path, so a malicious ostree commit with
+"export" as a symlink causes flatpak_rm_rf(export/bin) to delete files
+at the symlink target. On system installs (running as root), this is
+arbitrary file deletion.
+
+This commit uses fd-based operations to prevent to prevent the symlink
+attack.
+
+Resolves: CVE-2026-97023
+Resolves: https://github.com/flatpak/flatpak/security/advisories/GHSA-5p67-xh8x-rq54
+
+Backport of commit 9454433f70b030d3030a9d22e11e9906a54b1178.
+
+Adapted for 1.12.9: keep preexisting return TRUE after a failed
+.ref write (1.16.x uses return FALSE); hunk offsets for 1.12.9.
+---
+ common/flatpak-dir.c | 29 ++++++++++++++++++++++-------
+ 1 file changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index 6c45bfd..0e37eb4 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -8711,12 +8711,23 @@ flatpak_dir_deploy (FlatpakDir          *self,
+                                 G_FILE_CREATE_REPLACE_DESTINATION, NULL, cancellable, error))
+     return TRUE;
+ 
+-  export = g_file_get_child (checkoutdir, "export");
+-
+   /* Never export any binaries bundled with the app */
+-  bindir = g_file_get_child (export, "bin");
+-  if (!flatpak_rm_rf (bindir, cancellable, error))
+-    return FALSE;
++  {
++    g_autoptr(GError) local_error = NULL;
++    glnx_autofd int export_dfd = -1;
++
++    export_dfd = flatpak_deploy_get_export_fd (checkoutdir_dfd, NULL, 0, &local_error);
++    if (export_dfd < 0 &&
++        !g_error_matches (local_error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND))
++      {
++        g_propagate_error (error, g_steal_pointer (&local_error));
++        return FALSE;
++      }
++
++    if (export_dfd >= 0 &&
++        !glnx_shutil_rm_rf_at (export_dfd, "bin", cancellable, error))
++      return FALSE;
++  }
+ 
+   if (flatpak_decomposed_is_runtime (ref))
+     {
+@@ -8762,20 +8773,24 @@ flatpak_dir_deploy (FlatpakDir          *self,
+         }
+ 
+       /* Runtime should never export anything */
+-      if (!flatpak_rm_rf (export, cancellable, error))
++      if (!glnx_shutil_rm_rf_at (checkoutdir_dfd, "export", cancellable, error))
+         return FALSE;
+     }
+   else /* is app */
+     {
+       g_autofree char *ref_arch = flatpak_decomposed_dup_arch (ref);
+       g_autofree char *ref_branch = flatpak_decomposed_dup_branch (ref);
+-      g_autoptr(GFile) wrapper = g_file_get_child (bindir, ref_id);
+       g_autofree char *escaped_app = maybe_quote (ref_id);
+       g_autofree char *escaped_branch = maybe_quote (ref_branch);
+       g_autofree char *escaped_arch = maybe_quote (ref_arch);
+       g_autofree char *bin_data = NULL;
++      g_autoptr(GFile) wrapper = NULL;
+       int r;
+ 
++      export = g_file_get_child (checkoutdir, "export");
++      bindir = g_file_get_child (export, "bin");
++      wrapper = g_file_get_child (bindir, ref_id);
++
+       if (!flatpak_mkdir_p (bindir, cancellable, error))
+         return FALSE;
+ 
+-- 
+2.55.0
+

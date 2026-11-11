@@ -1,0 +1,122 @@
+From e7f96b4d1533f735ace2ea21dbf770e8d4be465a Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 29 Jul 2026 21:10:32 +0200
+Subject: [PATCH] revokefs: Avoid symlink path traversal in chmod()
+
+Use glnx_chaseat to ensure that all the attacker-controlled paths end up
+inside the basefd directory, and then AT_SYMLINK_NOFOLLOW to make sure
+that the last path component won't escape from the basefd.
+
+On kernels >= 6.6 we can now use fchmodat() with AT_SYMLINK_NOFOLLOW,
+but on older kernels that didn't work, so if necessary fall back to
+opening the file with O_NOFOLLOW and then calling fchmod() on it.
+
+Because this is the last syscall that used the previous (flawed)
+validation mechanism, we can now remove the validation helpers and be
+sure that everything is using the glnx-chaseat()-based replacements.
+
+[smcv: Separated from a larger commit for better reviewability]
+Co-authored-by: Simon McVittie <smcv@collabora.com>
+Resolves: https://github.com/flatpak/flatpak/security/advisories/GHSA-qrwq-7qwx-q9rp
+
+Backport of commit e7f96b4d1533f735ace2ea21dbf770e8d4be465a.
+
+Adapted for 1.12.9: hunk offsets for 1.12.9 writer.c; no semantic change.
+
+---
+ revokefs/writer.c | 69 +++++++++++++++--------------------------------
+ 1 file changed, 21 insertions(+), 48 deletions(-)
+
+diff --git a/revokefs/writer.c b/revokefs/writer.c
+index dd6564b..c54b5b8 100644
+--- a/revokefs/writer.c
++++ b/revokefs/writer.c
+@@ -285,46 +285,6 @@ chase_request_any_and_path (RevokefsRequest *request,
+                           data_size - request->arg1, out_name);
+ }
+ 
+-static gboolean
+-validate_path (char *path)
+-{
+-  char *end_segment;
+-
+-  /* No absolute or empty paths */
+-  if (*path == '/' || *path == 0)
+-    return FALSE;
+-
+-  while (*path != 0)
+-    {
+-      end_segment = strchr (path, '/');
+-      if (end_segment == NULL)
+-        end_segment = path + strlen (path);
+-
+-      if (strncmp (path, "..", 2) == 0)
+-        return FALSE;
+-
+-      path = end_segment;
+-      while (*path == '/')
+-        path++;
+-    }
+-
+-  return TRUE;
+-}
+-
+-static char *
+-get_valid_path (guchar *data, size_t len)
+-{
+-  char *path = g_strndup ((const char *) data, len);
+-
+-  if (!validate_path (path))
+-    {
+-      g_printerr ("Invalid path argument %s\n", path);
+-      exit (1);
+-    }
+-
+-  return path;
+-}
+-
+ static int
+ mask_mode (int mode)
+ {
+@@ -486,17 +446,30 @@ handle_chmod (RevokefsRequest *request,
+               gsize data_size,
+               RevokefsResponse *response)
+ {
+-  g_autofree char *path = get_valid_path (request->data, data_size);
++  g_autofree char *name = NULL;
++  glnx_autofd int parent_fd = chase_request_path (request, data_size, &name);
++  glnx_autofd int fd = -1;
+   int mode = request->arg1;
+ 
+-  /* Note we can't use AT_SYMLINK_NOFOLLOW yet;
+-   * https://marc.info/?l=linux-kernel&m=148830147803162&w=2
+-   * https://marc.info/?l=linux-fsdevel&m=149193779929561&w=2
+-   */
+-  if (fchmodat (basefd, path, mask_mode (mode), 0) != 0)
+-    response->result = -errno;
++  if (fchmodat (parent_fd, name, mask_mode (mode), AT_SYMLINK_NOFOLLOW) == 0)
++    {
++      response->result = 0;
++    }
++  else if (errno == ENOTSUP)
++    {
++      /* Linux < 6.6 didn't implement fchmodat() with AT_SYMLINK_NOFOLLOW */
++      fd = openat (parent_fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
++      if (fd == -1)
++        response->result = -errno;
++      else if (fchmod (fd, mask_mode (mode)) != 0)
++        response->result = -errno;
++      else
++        response->result = 0;
++    }
+   else
+-    response->result = 0;
++    {
++      response->result = -errno;
++    }
+ 
+   return 0;
+ }
+-- 
+2.55.0
+
