@@ -1,0 +1,97 @@
+From 19456b916842b079af833a86b9ab89c5db154b92 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Mon, 3 Aug 2026 22:04:03 +0200
+Subject: [PATCH] ref-utils: Make remote name validation public and take an
+ error
+
+We should be consistent with the validation in the session-helper, so
+let's make this validation function available to it.
+
+Helps: https://github.com/flatpak/flatpak/security/advisories/GHSA-v2gw-v9h5-9q4x
+---
+ common/flatpak-ref-utils-private.h |  3 +++
+ common/flatpak-ref-utils.c         | 43 +++++++++++++++++++++---------
+ 2 files changed, 33 insertions(+), 13 deletions(-)
+
+diff --git a/common/flatpak-ref-utils-private.h b/common/flatpak-ref-utils-private.h
+index 4f52bf8..798a9bb 100644
+--- a/common/flatpak-ref-utils-private.h
++++ b/common/flatpak-ref-utils-private.h
+@@ -33,6 +33,9 @@ gboolean flatpak_is_valid_branch (const char *string,
+ gboolean flatpak_is_valid_arch (const char *string,
+                                 gssize      len,
+                                 GError    **error);
++gboolean flatpak_is_valid_remote_name (const char *string,
++                                       gssize      len,
++                                       GError    **error);
+ gboolean flatpak_has_name_prefix (const char *string,
+                                   const char *name);
+ gboolean flatpak_name_matches_one_wildcard_prefix (const char         *string,
+diff --git a/common/flatpak-ref-utils.c b/common/flatpak-ref-utils.c
+index b236c86..7c530b3 100644
+--- a/common/flatpak-ref-utils.c
++++ b/common/flatpak-ref-utils.c
+@@ -568,25 +568,42 @@ is_valid_remote_name_character (gint c)
+     c == '.';
+ }
+ 
+-static gboolean
+-is_valid_remote_name (const char *remote,
+-                      gsize len)
++gboolean
++flatpak_is_valid_remote_name (const char *string,
++                              gssize      len,
++                              GError    **error)
+ {
+   const char *end;
+ 
+-  if (len == 0)
+-    return FALSE;
++  if (len < 0)
++    len = strlen (string);
+ 
+-  end = remote + len;
++  if (G_UNLIKELY (len == 0))
++    {
++      flatpak_fail_error (error, FLATPAK_ERROR_INVALID_NAME,
++                          _("Remote name can't be empty"));
++      return FALSE;
++    }
+ 
+-  if (!is_valid_initial_remote_name_character (*remote++))
+-    return FALSE;
++  end = string + len;
+ 
+-  while (remote < end)
++  if (G_UNLIKELY (!is_valid_initial_remote_name_character (*string)))
+     {
+-      char c = *remote++;
+-      if (!is_valid_remote_name_character (c))
+-        return FALSE;
++      flatpak_fail_error (error, FLATPAK_ERROR_INVALID_NAME,
++                          _("Remote name can't start with %c"), *string);
++      return FALSE;
++    }
++  string++;
++
++  while (string < end)
++    {
++      if (G_UNLIKELY (!is_valid_remote_name_character (*string)))
++        {
++          flatpak_fail_error (error, FLATPAK_ERROR_INVALID_NAME,
++                              _("Remote name can't contain %c"), *string);
++          return FALSE;
++        }
++      string++;
+     }
+ 
+   return TRUE;
+@@ -623,7 +640,7 @@ _flatpak_decomposed_new (char            *ref,
+       const char *colon = strchr (p, ':');
+       if (colon != NULL)
+         {
+-          if (!is_valid_remote_name (ref, colon - ref))
++          if (!flatpak_is_valid_remote_name (ref, colon - ref, NULL))
+             {
+               flatpak_fail_error (error, FLATPAK_ERROR_INVALID_REF, _("Invalid remote name"));
+               return NULL;

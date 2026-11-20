@@ -3,7 +3,7 @@
 
 Name:           flatpak
 Version:        1.12.9
-Release:        9%{?dist}
+Release:        10%{?dist}
 Summary:        Application deployment framework for desktop apps
 
 License:        LGPLv2+
@@ -106,6 +106,14 @@ Patch153:       dir-use-fd-relative-operations-for-export-bin-removal-during-dep
 # CVE-2026-97024
 # https://github.com/flatpak/flatpak/commit/16611913eeed8c418a8d958cb743f3476a01e522
 Patch154:       dir-use-fd-relative-operations-for-files-etc-during-runtime-deploy.patch
+
+# CVE-2026-92162
+# https://github.com/flatpak/flatpak/commit/19456b916842b079af833a86b9ab89c5db154b92
+# https://github.com/flatpak/flatpak/commit/01773f84021dd090b2426f79675f94f2564f9279
+# https://github.com/flatpak/flatpak/commit/aeb369a2723506fabc1f701ef7a0dc6c97c4b983
+Patch155:       ref-utils-make-remote-name-validation-public-and-take-an-error.patch
+Patch156:       system-helper-validate-each-remote-name-and-architecture-argument.patch
+Patch157:       tests-add-some-unit-tests-for-ref-utils-name-component-validation.patch
 
 BuildRequires:  pkgconfig(appstream-glib)
 BuildRequires:  pkgconfig(dconf)
@@ -366,6 +374,10 @@ fi
 
 
 %changelog
+* Tue Nov 03 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 1.12.9-10
+- CVE-2026-92162 Local privilege escalation via crafted architecture name
+  Resolves: RHEL-299531
+
 * Mon Oct 12 2026 Luigi Pavan <lpavan@redhat.com> - 1.12.9-9
 - Use fd-relative operations for files/etc during runtime deploy (CVE-2026-97024)
   Resolves: RHEL-272181
